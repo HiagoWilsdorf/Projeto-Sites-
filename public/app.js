@@ -32,7 +32,7 @@ const MSG_STATUS = {
   logged: ['Registrada', ''], received: ['Nova', 'info'], read: ['Recebida', ''],
 };
 const TRIGGER = { before_due: 'Antes do vencimento', on_due: 'No dia do vencimento', after_due: 'Após o vencimento (atraso)' };
-const VARS = ['nome', 'primeiro_nome', 'parcela', 'valor', 'valor_atualizado', 'vencimento', 'dias_atraso', 'dias_para_vencer', 'saldo_devedor', 'valor_emprestado', 'total_emprestimo', 'qtd_parcelas', 'pix', 'empresa', 'hoje', 'valor_pago'];
+const VARS = ['cronograma', 'nome', 'primeiro_nome', 'parcela', 'valor', 'valor_atualizado', 'vencimento', 'dias_atraso', 'dias_para_vencer', 'saldo_devedor', 'valor_emprestado', 'total_emprestimo', 'qtd_parcelas', 'pix', 'empresa', 'hoje', 'valor_pago'];
 
 function situationBadge(i) {
   switch (i.situation) {
@@ -347,7 +347,8 @@ async function pageDashboard(main) {
   const monthName = (s) => new Date(s + '-15').toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
   main.innerHTML = `
     <div class="page-head"><div><h1>Painel</h1><div class="muted small">Hoje, ${dateBR(d.today)}</div></div>
-      <div class="actions"><a class="btn" href="#/clientes?novo=1">+ Cliente</a><a class="btn primary" href="#/emprestimos/novo">+ Novo empréstimo</a></div></div>
+      <div class="actions"><a class="btn primary" href="#/emprestimos/novo">+ Novo cliente / empréstimo</a></div></div>
+    <div id="wa-status"></div>
     <div class="kpis">
       <div class="kpi primary"><div class="label">A receber</div><div class="value">${brl(t.receivable)}</div><div class="sub">${t.active_loans} empréstimo(s) ativo(s)</div></div>
       <div class="kpi"><div class="label">Capital na rua</div><div class="value">${brl(t.principal_out)}</div><div class="sub">principal ainda não recuperado</div></div>
@@ -380,6 +381,21 @@ async function pageDashboard(main) {
         <div class="bar-pair"><div class="bar" style="height:${(m.received / max) * 100}%"></div><div class="bar alt" style="height:${(m.lent / max) * 100}%"></div></div>
         <div class="small muted">${monthName(m.month)}</div></div>`).join('')}</div>
     </div>`;
+  renderWaStatus($('#wa-status'));
+}
+
+async function renderWaStatus(el) {
+  if (!el) return;
+  try {
+    const st = await api('GET', '/whatsapp/status');
+    if (st.provider === 'manual') {
+      el.innerHTML = `<div class="card wa-banner warn"><div><strong>WhatsApp não conectado.</strong> As cobranças estão sendo geradas, mas você precisa tocar em enviar em cada uma.
+        <div class="small muted">Conecte seu número para as cobranças saírem sozinhas.</div></div><a class="btn wa" href="#/config">Conectar WhatsApp</a></div>`;
+    } else if (!st.connected) {
+      el.innerHTML = `<div class="card wa-banner danger"><div><strong>WhatsApp desconectado.</strong> As cobranças automáticas vão falhar até reconectar.
+        <div class="small muted">${esc(st.error || st.detail || '')}</div></div><a class="btn wa" href="#/config">Reconectar</a></div>`;
+    } else el.innerHTML = '';
+  } catch { el.innerHTML = ''; }
 }
 
 // ---------- Cobranças ----------
@@ -443,8 +459,7 @@ async function pageClients(main, query) {
   $('#q').oninput = (e) => { clearTimeout(timer); timer = setTimeout(() => go(`/clientes?q=${encodeURIComponent(e.target.value)}${archived ? '&arquivados=1' : ''}`), 350); };
   $('#arch').onchange = (e) => go(`/clientes${e.target.checked ? '?arquivados=1' : ''}`);
   for (const tr of $$('tr[data-id]', main)) tr.onclick = () => go(`/clientes/${tr.dataset.id}`);
-  $('#new-client').onclick = () => clientDialog(null, (c) => go(`/clientes/${c.id}`));
-  if (query?.get?.('novo')) clientDialog(null, (c) => go(`/clientes/${c.id}`));
+  $('#new-client').onclick = () => go('/emprestimos/novo');
   setTimeout(() => { const el = $('#q'); if (q && el) { el.focus(); el.setSelectionRange(q.length, q.length); } });
 }
 
@@ -572,12 +587,25 @@ async function pageNewLoan(main, query) {
   const [clients, settings] = await Promise.all([api('GET', '/clients'), api('GET', '/settings')]);
   const pre = query?.get?.('cliente');
   const today = todayISO();
-  main.innerHTML = `<div class="page-head"><div><a href="#/emprestimos" class="small">← Empréstimos</a><h1>Novo empréstimo</h1></div></div>
+  let mode = pre || query?.get?.('existente') ? 'existing' : 'new';
+  main.innerHTML = `<div class="page-head"><div><a href="#/emprestimos" class="small">← Empréstimos</a><h1>Novo cliente / empréstimo</h1>
+    <div class="muted small">Cadastre aqui o cliente já aprovado no WhatsApp. A partir daqui o app cuida das cobranças.</div></div></div>
     <div class="grid cols-2">
-      <form class="card" id="loan-form"><div class="form-grid">
-        <div class="field full"><label>Cliente *</label><div style="display:flex;gap:8px"><select name="client_id" required><option value="">Selecione…</option>
-          ${clients.map((c) => `<option value="${c.id}" ${c.id == pre ? 'selected' : ''}>${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}</option>`).join('')}</select>
-          <button type="button" class="btn" id="add-client" title="Novo cliente">+</button></div></div>
+      <form class="card" id="loan-form">
+        <div class="tabs" style="margin-top:-6px"><button type="button" data-mode="new">Cliente novo</button><button type="button" data-mode="existing">Cliente já cadastrado</button></div>
+        <div class="form-grid" data-section="new">
+          <div class="field full"><label>Nome completo *</label><input name="nc_name"></div>
+          <div class="field"><label>WhatsApp *</label><input name="nc_phone" inputmode="tel" placeholder="(11) 99999-9999"></div>
+          <div class="field"><label>CPF</label><input name="nc_document"></div>
+          <div class="field full"><label>Endereço</label><input name="nc_address"></div>
+          <div class="field full"><label>Observações sobre o cliente</label><input name="nc_notes" placeholder="ex.: indicado por…, trabalha em…"></div>
+        </div>
+        <div class="form-grid" data-section="existing">
+          <div class="field full"><label>Cliente *</label><select name="client_id"><option value="">Selecione…</option>
+          ${clients.map((c) => `<option value="${c.id}" ${c.id == pre ? 'selected' : ''}>${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}</option>`).join('')}</select></div>
+        </div>
+        <h3 style="margin:8px 0 10px">Empréstimo</h3>
+        <div class="form-grid">
         <div class="field"><label>Valor emprestado (R$) *</label><input name="principal" inputmode="decimal" placeholder="1.000,00" required></div>
         <div class="field"><label>Data do empréstimo</label><input type="date" name="start_date" value="${today}"></div>
         <div class="field"><label>Frequência das parcelas</label><select name="frequency">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
@@ -589,8 +617,9 @@ async function pageNewLoan(main, query) {
         <div class="field"><label>Multa por atraso (%)</label><input name="late_fee_percent" inputmode="decimal" value="${esc(settings.default_late_fee_percent)}"></div>
         <div class="field"><label>Juros de mora (% ao dia)</label><input name="late_interest_daily" inputmode="decimal" value="${esc(settings.default_late_interest_daily)}"></div>
         <div class="field full"><label>Observações / garantia</label><textarea name="notes" rows="3"></textarea></div>
+        <div class="field full"><label class="check"><input type="checkbox" name="send_confirmation" ${settings.send_release_message === '1' ? 'checked' : ''}> Enviar ao cliente, no WhatsApp, a confirmação com todas as datas de cobrança</label></div>
       </div>
-      <div class="modal-foot"><a class="btn" href="#/emprestimos">Cancelar</a><button class="btn primary">Criar empréstimo</button></div></form>
+      <div class="modal-foot"><a class="btn" href="#/emprestimos">Cancelar</a><button class="btn primary">Cadastrar e liberar</button></div></form>
       <div class="card" id="sim"><h2>Simulação</h2><div class="empty">Preencha o valor para ver as parcelas</div></div>
     </div>`;
   const form = $('#loan-form');
@@ -620,15 +649,33 @@ async function pageNewLoan(main, query) {
   };
   form.oninput = simulate;
   form.onchange = simulate;
-  $('#add-client').onclick = () => clientDialog(null, (c) => {
-    form.client_id.insertAdjacentHTML('beforeend', `<option value="${c.id}">${esc(c.name)}</option>`);
-    form.client_id.value = c.id;
-  });
+  const setMode = (m) => {
+    mode = m;
+    for (const b of $$('[data-mode]', form)) b.classList.toggle('active', b.dataset.mode === m);
+    for (const sec of $$('[data-section]', form)) sec.hidden = sec.dataset.section !== m;
+    form.nc_name.required = form.nc_phone.required = m === 'new';
+    form.client_id.required = m === 'existing';
+  };
+  for (const b of $$('[data-mode]', form)) b.onclick = () => setMode(b.dataset.mode);
+  setMode(mode);
   form.onsubmit = (e) => {
     e.preventDefault();
     guard(async () => {
-      const l = await api('POST', '/loans', payload());
-      toast('Empréstimo criado');
+      const p = payload();
+      for (const k of Object.keys(p)) if (k.startsWith('nc_')) delete p[k];
+      if (mode === 'new') {
+        const f = formData(form);
+        p.new_client = { name: f.nc_name, phone: f.nc_phone, document: f.nc_document, address: f.nc_address, notes: f.nc_notes };
+        delete p.client_id;
+      }
+      const l = await api('POST', '/loans', p);
+      toast('Cliente cadastrado e empréstimo liberado');
+      const cf = l.confirmation;
+      if (cf?.status === 'pending_manual' && cf.wa_link && await confirmDialog('Abrir o WhatsApp para enviar a confirmação com as datas de cobrança?', 'Abrir WhatsApp')) {
+        openWa(cf.wa_link);
+        await api('POST', `/messages/${cf.id}/mark-sent`);
+      } else if (cf?.status === 'sent') toast('Confirmação enviada no WhatsApp');
+      else if (cf?.status === 'failed') toast('Confirmação não enviada: ' + cf.error, 'error');
       refreshBadges();
       go(`/emprestimos/${l.id}`);
     }, e.submitter);
@@ -865,14 +912,16 @@ async function pageSettings(main) {
       <div class="field"><label>Enviar até</label><input type="time" name="send_window_end" value="${esc(s.send_window_end)}"></div>
       <div class="field"><label>Verificar a cada (minutos)</label><input type="number" min="1" name="scheduler_interval_minutes" value="${esc(s.scheduler_interval_minutes)}"></div>
       <div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="send_receipt_on_payment" ${s.send_receipt_on_payment === '1' ? 'checked' : ''}> Enviar recibo ao registrar pagamento</label></div>
+      <div class="field full"><label class="check"><input type="checkbox" name="send_release_message" ${s.send_release_message === '1' ? 'checked' : ''}> Ao cadastrar um empréstimo, enviar a confirmação com as datas de cobrança</label></div>
     </div></div>
-    <div class="card"><h2>WhatsApp</h2>
+    <div class="card"><h2>WhatsApp — conexão</h2>
+      <div id="wa-conn" class="wa-conn"><span class="muted small">Verificando conexão…</span></div>
       <div class="field"><label>Forma de envio</label><select name="wa_provider">
-        <option value="manual">Manual — abre o WhatsApp com a mensagem pronta (sem custo, sem configuração)</option>
+        <option value="evolution">Evolution API — conecta o seu número por QR Code (gratuita, auto-hospedada)</option>
+        <option value="zapi">Z-API — conecta o seu número por QR Code (serviço pago)</option>
         <option value="cloud">WhatsApp Cloud API (oficial da Meta)</option>
-        <option value="evolution">Evolution API (auto-hospedada)</option>
-        <option value="zapi">Z-API</option>
-        <option value="webhook">Webhook genérico (n8n, Make, etc.)</option></select></div>
+        <option value="webhook">Meu CRM / automação (envia para uma URL: n8n, Make, CRM próprio…)</option>
+        <option value="manual">Manual — abre o WhatsApp com a mensagem pronta (sem conexão)</option></select></div>
       <div data-prov="cloud" class="form-grid">
         <div class="field"><label>Token de acesso</label><input name="wa_cloud_token" value="${esc(s.wa_cloud_token)}" autocomplete="off"></div>
         <div class="field"><label>Phone Number ID</label><input name="wa_cloud_phone_id" value="${esc(s.wa_cloud_phone_id)}"></div>
@@ -890,7 +939,7 @@ async function pageSettings(main) {
         <div class="field"><label>Client-Token (segurança)</label><input name="wa_zapi_client_token" value="${esc(s.wa_zapi_client_token)}" autocomplete="off"></div>
       </div>
       <div data-prov="webhook" class="form-grid">
-        <div class="field full"><label>URL (recebe POST JSON {"phone","message"})</label><input name="wa_webhook_url" value="${esc(s.wa_webhook_url)}"></div>
+        <div class="field full"><label>URL do seu CRM / automação</label><input name="wa_webhook_url" value="${esc(s.wa_webhook_url)}"><div class="hint">Cada cobrança é enviada como POST JSON <code>{"phone": "5511999999999", "message": "texto"}</code>. Seu CRM ou automação faz o envio no WhatsApp.</div></div>
       </div>
       <div data-prov="cloud evolution zapi" style="margin-top:6px">
         <label>Webhook de respostas (cole no seu provedor para receber mensagens dos clientes no CRM)</label>
@@ -913,17 +962,41 @@ async function pageSettings(main) {
   form.wa_provider.value = s.wa_provider;
   const syncProv = () => { for (const el of $$('[data-prov]', main)) el.style.display = el.dataset.prov.split(' ').includes(form.wa_provider.value) ? '' : 'none'; };
   form.wa_provider.onchange = syncProv; syncProv();
+  const conn = async () => {
+    const el = $('#wa-conn');
+    if (!el) return;
+    const st = await api('GET', '/whatsapp/status');
+    const dot = st.provider === 'manual' ? 'warn' : st.connected ? 'ok' : 'danger';
+    const label = st.provider === 'manual' ? 'Modo manual (sem conexão)' : st.connected ? 'Conectado — cobranças saem automaticamente' : 'Desconectado';
+    el.innerHTML = `<span class="badge ${dot}">● ${label}</span> <span class="small muted">${esc(st.error || st.detail || '')}</span>
+      ${st.can_qr || ['evolution', 'zapi'].includes(st.provider) ? `<button type="button" class="btn sm wa" id="wa-qr">${st.connected ? 'Reconectar' : 'Conectar com QR Code'}</button>` : ''}`;
+    const qrBtn = $('#wa-qr');
+    if (qrBtn) qrBtn.onclick = () => guard(async () => {
+      const q = await api('POST', '/whatsapp/qr');
+      if (q.connected) { toast(q.message); return conn(); }
+      const close = modal('Conectar WhatsApp', `<div style="text-align:center"><p class="small">No celular: WhatsApp → <strong>Aparelhos conectados</strong> → <strong>Conectar um aparelho</strong> e aponte para o código.</p>
+        <img src="${esc(q.image)}" alt="QR Code" style="width:280px;max-width:100%;background:#fff;padding:8px;border-radius:12px">
+        ${q.pairing_code ? `<p class="small muted">Ou use o código de pareamento: <strong>${esc(q.pairing_code)}</strong></p>` : ''}
+        <p class="small muted" id="qr-wait">Aguardando leitura…</p></div>`);
+      const timer = setInterval(async () => {
+        if (!$('#qr-wait')) return clearInterval(timer);
+        const s2 = await api('GET', '/whatsapp/status').catch(() => ({}));
+        if (s2.connected) { clearInterval(timer); close(); toast('WhatsApp conectado!'); conn(); }
+      }, 3000);
+    }, qrBtn);
+  };
+  conn().catch(() => {});
   $('#copy-wh').onclick = () => { navigator.clipboard?.writeText(webhookUrl); toast('Copiado'); };
   form.onsubmit = (e) => {
     e.preventDefault();
     const f = formData(form);
-    for (const k of ['scheduler_enabled', 'send_receipt_on_payment']) f[k] = f[k] ? '1' : '0';
+    for (const k of ['scheduler_enabled', 'send_receipt_on_payment', 'send_release_message']) f[k] = f[k] ? '1' : '0';
     for (const k of ['default_late_fee_percent', 'default_late_interest_daily']) f[k] = String(f[k]).replace(',', '.');
     guard(async () => { await api('PUT', '/settings', f); toast('Configurações salvas'); $('#brand-name').textContent = f.business_name; reload(); }, e.submitter);
   };
   $('#test-wa').onclick = (e) => guard(async () => {
     const f = formData(form);
-    for (const k of ['scheduler_enabled', 'send_receipt_on_payment']) f[k] = f[k] ? '1' : '0';
+    for (const k of ['scheduler_enabled', 'send_receipt_on_payment', 'send_release_message']) f[k] = f[k] ? '1' : '0';
     await api('PUT', '/settings', f);
     const phone = $('#test-phone').value;
     const r = await api('POST', '/settings/test-whatsapp', { phone });

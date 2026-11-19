@@ -208,3 +208,8 @@ code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-
 [hidden] { display: none !important; }
 .grid > .card, .grid > div > .card:first-child { margin-top: 0; }
 main { min-width: 0; }
+
+.wa-banner { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.wa-banner.warn { border-color: var(--warn); background: var(--warn-soft); }
+.wa-banner.danger { border-color: var(--danger); background: var(--danger-soft); }
+.wa-conn { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }

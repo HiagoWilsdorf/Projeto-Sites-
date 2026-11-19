@@ -303,11 +303,20 @@ function createApp(db, { scheduler } = {}) {
     res.json({ installments: rows, total_cents: total, interest_cents: total - inp.principal, first_due_date: inp.firstDue });
   });
 
-  api.post('/loans', (req, res) => {
+  api.post('/loans', async (req, res) => {
     const b = req.body || {};
-    const c = getClient(b.client_id);
-    if (!c) throw bad('Selecione um cliente');
     const inp = loanInput(b);
+    let c;
+    if (b.new_client) {
+      const nc = clientPayload(b.new_client);
+      if (!nc.phone) throw bad('Informe o WhatsApp do cliente para receber as cobranças');
+      const r = db.prepare('INSERT INTO clients(name, phone, document, email, address, notes, tags, score, whatsapp_opt_in) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(nc.name, nc.phone, nc.document, nc.email, nc.address, nc.notes, nc.tags, nc.score, nc.whatsapp_opt_in);
+      c = getClient(r.lastInsertRowid);
+    } else {
+      c = getClient(b.client_id);
+    }
+    if (!c) throw bad('Selecione um cliente');
     const rows = schedule(inp);
     const total = rows.reduce((s, r) => s + r.amount_cents, 0);
     const id = tx(db, () => {
@@ -318,10 +327,20 @@ function createApp(db, { scheduler } = {}) {
       const ins = db.prepare('INSERT INTO installments(loan_id, number, due_date, amount_cents, principal_cents, interest_cents) VALUES (?,?,?,?,?,?)');
       for (const row of rows) ins.run(loanId, row.number, row.due_date, row.amount_cents, row.principal_cents, row.interest_cents);
       db.prepare("INSERT INTO messages(client_id, loan_id, direction, channel, kind, body, status) VALUES (?,?,'note','crm','note',?,'logged')")
-        .run(c.id, loanId, `Empréstimo #${loanId} criado: ${F.formatBRL(inp.principal)} em ${inp.count}x (total ${F.formatBRL(total)}).`);
+        .run(c.id, loanId, `Empréstimo #${loanId} liberado: ${F.formatBRL(inp.principal)} em ${inp.count}x (total ${F.formatBRL(total)}).`);
       return loanId;
     });
-    res.status(201).json(loanWithState(getLoan(id)));
+    const loan = getLoan(id);
+    let confirmation = null;
+    const s = getSettings(db);
+    if (b.send_confirmation ?? s.send_release_message === '1') {
+      const tpl = db.prepare("SELECT body FROM templates WHERE name LIKE 'Confirmação do empréstimo%' ORDER BY id LIMIT 1").get();
+      if (tpl) {
+        const body = M.render(tpl.body, M.buildContext(db, { client: c, loan }));
+        confirmation = withLink(await M.dispatch(db, { client: c, loanId: id, channel: 'whatsapp', kind: 'release', body }), c);
+      }
+    }
+    res.status(201).json({ ...loanWithState(loan), confirmation });
   });
 
   api.get('/loans', (req, res) => {
@@ -591,6 +610,13 @@ function createApp(db, { scheduler } = {}) {
     scheduler?.reschedule();
     res.json({ ok: true });
   });
+  api.get('/whatsapp/status', async (req, res) => {
+    try { res.json(await M.connectionStatus(getSettings(db))); } catch (e) { res.json({ provider: getSettings(db).wa_provider, connected: false, automatic: true, error: e.message }); }
+  });
+  api.post('/whatsapp/qr', async (req, res) => {
+    try { res.json(await M.connectionQR(getSettings(db))); } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
   api.post('/settings/test-whatsapp', async (req, res) => {
     const phone = String(req.body?.phone || '');
     try {

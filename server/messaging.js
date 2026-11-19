@@ -38,6 +38,8 @@ function buildContext(db, { client, loan, installment, extra = {} }) {
     ctx.total_emprestimo = F.formatBRL(loan.total_cents);
     ctx.qtd_parcelas = String(loan.installments_count);
     ctx.saldo_devedor = F.formatBRL(loanBalance(db, loan, today));
+    ctx.cronograma = db.prepare("SELECT * FROM installments WHERE loan_id=? AND status!='canceled' ORDER BY number").all(loan.id)
+      .map((i) => `${i.number}/${loan.installments_count} – ${F.formatDateBR(i.due_date)} – ${F.formatBRL(i.amount_cents)}`).join('\n');
   }
   if (installment && loan) {
     const st = F.installmentState(installment, loan, today);
@@ -162,12 +164,12 @@ function parseInbound(payload) {
     }
     // Evolution API (messages.upsert)
     const d = payload?.data;
-    if (d?.key?.remoteJid && !d.key.fromMe) {
+    if (d?.key?.remoteJid && !d.key.fromMe && !d.key.remoteJid.endsWith('@g.us')) {
       const text = d.message?.conversation || d.message?.extendedTextMessage?.text || '[mídia]';
       out.push({ phone: d.key.remoteJid.split('@')[0], text, id: d.key.id });
     }
     // Z-API
-    if (payload?.phone && payload?.fromMe === false) {
+    if (payload?.phone && payload?.fromMe === false && !payload.isGroup) {
       out.push({ phone: payload.phone, text: payload.text?.message || '[mídia]', id: payload.messageId });
     }
   } catch { /* ignora formato desconhecido */ }
@@ -181,4 +183,73 @@ function findClientByPhone(db, phone) {
   return candidates[0] || null;
 }
 
-module.exports = { normalizePhone, waLink, buildContext, render, sendWhatsApp, dispatch, parseInbound, findClientByPhone, loanBalance };
+function evoBase(s) {
+  if (!s.wa_evolution_url || !s.wa_evolution_instance) throw new Error('Preencha URL, instância e API key da Evolution API');
+  return { base: s.wa_evolution_url.replace(/\/+$/, ''), inst: encodeURIComponent(s.wa_evolution_instance), headers: { apikey: s.wa_evolution_apikey } };
+}
+function zapiBase(s) {
+  if (!s.wa_zapi_instance || !s.wa_zapi_token) throw new Error('Preencha o ID e o token da instância Z-API');
+  return { base: `https://api.z-api.io/instances/${s.wa_zapi_instance}/token/${s.wa_zapi_token}`, headers: s.wa_zapi_client_token ? { 'Client-Token': s.wa_zapi_client_token } : {} };
+}
+async function getJSON(url, headers, method = 'GET', body) {
+  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) });
+  const text = await res.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(typeof data === 'object' ? JSON.stringify(data) : String(data)).slice(0, 300)}`);
+  return data;
+}
+
+/** Status da conexão do número de WhatsApp com o provedor. */
+async function connectionStatus(s) {
+  switch (s.wa_provider) {
+    case 'manual': return { provider: 'manual', connected: false, automatic: false, detail: 'Envio manual: você toca em enviar em cada mensagem.' };
+    case 'evolution': {
+      const { base, inst, headers } = evoBase(s);
+      const d = await getJSON(`${base}/instance/connectionState/${inst}`, headers);
+      const state = d?.instance?.state || d?.state;
+      return { provider: 'evolution', connected: state === 'open', automatic: true, detail: `Estado: ${state || 'desconhecido'}`, can_qr: true };
+    }
+    case 'zapi': {
+      const { base, headers } = zapiBase(s);
+      const d = await getJSON(`${base}/status`, headers);
+      return { provider: 'zapi', connected: !!d?.connected, automatic: true, detail: d?.error || (d?.connected ? 'Conectado' : 'Desconectado'), can_qr: true };
+    }
+    case 'cloud':
+      if (!s.wa_cloud_token || !s.wa_cloud_phone_id) throw new Error('Preencha token e Phone Number ID');
+      await getJSON(`https://graph.facebook.com/${s.wa_cloud_api_version || 'v21.0'}/${s.wa_cloud_phone_id}`, { Authorization: `Bearer ${s.wa_cloud_token}` });
+      return { provider: 'cloud', connected: true, automatic: true, detail: 'Credenciais válidas' };
+    case 'webhook':
+      return { provider: 'webhook', connected: !!s.wa_webhook_url, automatic: true, detail: s.wa_webhook_url ? 'Enviando para o seu CRM/automação' : 'Informe a URL' };
+    default: return { provider: s.wa_provider, connected: false, automatic: false, detail: 'Provedor desconhecido' };
+  }
+}
+
+/** Obtém o QR Code para conectar o número (Evolution API / Z-API). */
+async function connectionQR(s) {
+  if (s.wa_provider === 'evolution') {
+    const { base, inst, headers } = evoBase(s);
+    let d;
+    try {
+      d = await getJSON(`${base}/instance/connect/${inst}`, headers);
+    } catch (e) {
+      if (!/404/.test(e.message)) throw e;
+      // instância ainda não existe: cria e pede o QR
+      d = await getJSON(`${base}/instance/create`, headers, 'POST', { instanceName: s.wa_evolution_instance, integration: 'WHATSAPP-BAILEYS', qrcode: true });
+      d = d?.qrcode || d;
+    }
+    const img = d?.base64 || d?.qrcode?.base64;
+    if (!img) return { connected: true, message: 'Número já conectado' };
+    return { image: img.startsWith('data:') ? img : `data:image/png;base64,${img}`, pairing_code: d?.pairingCode || null };
+  }
+  if (s.wa_provider === 'zapi') {
+    const { base, headers } = zapiBase(s);
+    const d = await getJSON(`${base}/qr-code/image`, headers);
+    if (d?.connected) return { connected: true, message: 'Número já conectado' };
+    const img = d?.value || d?.image;
+    if (!img) throw new Error('A Z-API não retornou o QR Code');
+    return { image: img.startsWith('data:') ? img : `data:image/png;base64,${img}` };
+  }
+  throw new Error('QR Code disponível apenas para Evolution API e Z-API');
+}
+
+module.exports = { connectionStatus, connectionQR, normalizePhone, waLink, buildContext, render, sendWhatsApp, dispatch, parseInbound, findClientByPhone, loanBalance };

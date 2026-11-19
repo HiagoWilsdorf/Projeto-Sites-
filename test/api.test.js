@@ -88,3 +88,54 @@ test('fluxo completo: cliente, empréstimo, pagamento, automação', async () =>
     server.close();
   }
 });
+
+test('cadastro de cliente novo com empréstimo, confirmação automática e conexão Evolution', async () => {
+  const { db, server, call } = await setup();
+  const http = require('node:http');
+  const sent = [];
+  // Simula a Evolution API
+  const evo = await new Promise((r) => {
+    const s = http.createServer((req, res) => {
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.headers.apikey !== 'k') { res.statusCode = 401; return res.end('{}'); }
+        if (req.url === '/instance/connectionState/minha') return res.end('{"instance":{"state":"open"}}');
+        if (req.url === '/instance/connect/minha') return res.end('{"base64":"data:image/png;base64,AAA","pairingCode":"ABCD"}');
+        if (req.url === '/message/sendText/minha') { sent.push(JSON.parse(b)); return res.end('{"key":{"id":"MSG1"}}'); }
+        res.statusCode = 404; res.end('{}');
+      });
+    });
+    s.listen(0, () => r(s));
+  });
+  try {
+    await call('POST', '/api/auth/setup', { password: 'segredo123' });
+    await call('PUT', '/api/settings', { wa_provider: 'evolution', wa_evolution_url: `http://127.0.0.1:${evo.address().port}`, wa_evolution_instance: 'minha', wa_evolution_apikey: 'k', pix_key: 'chave-pix' });
+
+    const st = (await call('GET', '/api/whatsapp/status')).data;
+    assert.strictEqual(st.connected, true);
+    const qr = (await call('POST', '/api/whatsapp/qr')).data;
+    assert.ok(qr.image.startsWith('data:image/png'));
+
+    // cliente aprovado no WhatsApp é cadastrado junto com o empréstimo
+    const r = await call('POST', '/api/loans', {
+      new_client: { name: 'Carlos Lima', phone: '(11) 97777-6666', document: '123' },
+      principal_cents: 150000, interest_rate: 10, method: 'simple', frequency: 'monthly', installments_count: 3,
+    });
+    assert.strictEqual(r.status, 201, JSON.stringify(r.data));
+    assert.strictEqual(r.data.confirmation.status, 'sent');
+    assert.strictEqual(sent[0].number, '5511977776666');
+    assert.ok(sent[0].text.includes('1/3 –') && sent[0].text.includes('3/3 –') && sent[0].text.includes('chave-pix'));
+
+    // sem telefone não cadastra
+    const bad = await call('POST', '/api/loans', { new_client: { name: 'Sem Fone' }, principal_cents: 1000, interest_rate: 1, method: 'simple', frequency: 'monthly', installments_count: 1 });
+    assert.strictEqual(bad.status, 400);
+
+    // número desconhecido no WhatsApp NÃO vira cliente
+    const tok = db.prepare("SELECT value FROM settings WHERE key='wa_inbound_token'").get().value;
+    await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '5521900001111@s.whatsapp.net', fromMe: false, id: 'Z1' }, message: { conversation: 'quero empréstimo' } } });
+    assert.strictEqual((await call('GET', '/api/clients')).data.length, 1);
+  } finally {
+    server.close(); evo.close();
+  }
+});

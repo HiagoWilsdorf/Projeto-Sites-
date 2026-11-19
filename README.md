@@ -4,6 +4,19 @@ Aplicativo web de uso pessoal para controlar empréstimos de ponta a ponta: clie
 
 Funciona no computador e no celular (pode ser "instalado" na tela inicial como app).
 
+## Como funciona o fluxo
+
+1. **Análise e aprovação acontecem no seu WhatsApp** (documentos, conversa, decisão) — fora do app.
+2. **Cliente aprovado → cadastro no app**: em *+ Novo cliente / empréstimo* você cadastra o cliente e o empréstimo na mesma tela.
+3. **Confirmação**: o cliente recebe no WhatsApp a confirmação com todas as datas de cobrança.
+4. **Cobranças automáticas** (regras padrão, editáveis em *Automações*):
+   - **3 dias antes**: “a parcela X, no valor de R$ Y, será cobrada em DD/MM”;
+   - **no dia do vencimento**;
+   - **em atraso**: a partir do 1º dia, repetindo a cada 3 dias (até 5x), e aviso de atraso grave aos 15 dias (semanal);
+5. **Pagamento**: ao registrar, o cliente recebe o recibo com o saldo restante.
+
+O app envia **somente mensagens de cobrança**. Respostas dos clientes ficam registradas no histórico de cada cliente; números que não são clientes não são cadastrados.
+
 ## Funcionalidades
 
 - **Painel**: valor a receber, capital na rua, valor em atraso e % de inadimplência, recebido no mês, lucro realizado e projetado, gráfico dos últimos 6 meses, atrasados e próximos vencimentos.
@@ -26,11 +39,10 @@ Configure em **Configurações → WhatsApp**:
 
 | Modo | Como funciona |
 |---|---|
+| **Evolution API** / **Z-API** | Conexão direta do seu número: clique em *Conectar com QR Code* em Configurações e leia o código pelo WhatsApp (Aparelhos conectados). O app mostra o status da conexão e avisa no painel se cair. |
+| **Meu CRM / automação** | Cada cobrança vai como `POST {"phone","message"}` para a URL do seu CRM, n8n, Make etc., que faz o envio. |
 | **Manual** (padrão) | Sem custo e sem configuração. As cobranças automáticas ficam em "Mensagens → Envio manual" e o botão abre o WhatsApp (wa.me) com o texto pronto; basta tocar em enviar. |
 | **WhatsApp Cloud API** (Meta, oficial) | Envio 100% automático. Informe token e Phone Number ID. Pela regra da Meta, mensagem livre só é entregue se o cliente falou com você nas últimas 24h; fora disso use modelos aprovados. |
-| **Evolution API** | Envio automático via instância própria (URL, instância e API key). |
-| **Z-API** | Envio automático (ID da instância, token e Client-Token). |
-| **Webhook** | Envia `POST {"phone","message"}` para uma URL sua (n8n, Make, Zapier…). |
 
 **Respostas dos clientes no CRM**: copie a URL de webhook mostrada nas configurações e cadastre no seu provedor (Cloud API, Evolution ou Z-API). As mensagens recebidas aparecem no histórico do cliente e na aba "Mensagens".
 
