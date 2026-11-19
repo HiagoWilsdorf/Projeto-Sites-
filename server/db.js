@@ -123,40 +123,17 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_msg_client ON messages(client_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_msg_status ON messages(status);
-
-CREATE TABLE IF NOT EXISTS documents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  filename TEXT NOT NULL,
-  mime TEXT,
-  size INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
 `;
-
-// Colunas adicionadas depois da primeira versão (migração automática).
-const EXTRA_COLUMNS = {
-  clients: {
-    stage: "TEXT NOT NULL DEFAULT 'client'", // lead | analysis | approved | rejected | client
-    requested_cents: 'INTEGER NOT NULL DEFAULT 0',
-    doc_checklist: "TEXT NOT NULL DEFAULT '{}'",
-    source: 'TEXT',
-    stage_updated_at: 'TEXT',
-  },
-};
 
 const DEFAULT_TEMPLATES = [
   ['Lembrete de vencimento',
-    'Olá {primeiro_nome}! Lembrete: a parcela {parcela} do seu empréstimo, no valor de {valor}, será cobrada em {vencimento} (daqui a {dias_para_vencer} dia(s)).\n\nChave PIX: {pix}\n\n{empresa}'],
+    'Olá {primeiro_nome}! Passando para lembrar que a parcela {parcela} do seu empréstimo, no valor de {valor}, vence em {vencimento} ({dias_para_vencer} dia(s)).\n\nChave PIX: {pix}\n\n{empresa}'],
   ['Vence hoje',
     'Olá {primeiro_nome}, bom dia! A parcela {parcela} no valor de {valor} vence HOJE ({vencimento}).\n\nPIX: {pix}\nApós o pagamento, envie o comprovante por aqui. Obrigado!\n\n{empresa}'],
   ['Aviso de atraso',
     'Olá {primeiro_nome}. Identificamos que a parcela {parcela}, vencida em {vencimento}, está em aberto há {dias_atraso} dia(s).\n\nValor original: {valor}\nValor atualizado (multa + juros): {valor_atualizado}\n\nPIX: {pix}\nPor favor, regularize o quanto antes ou entre em contato para combinarmos.\n\n{empresa}'],
   ['Atraso grave',
     '{primeiro_nome}, sua parcela {parcela} está em atraso há {dias_atraso} dias. Valor atualizado: {valor_atualizado}. Saldo devedor total: {saldo_devedor}.\n\nPrecisamos resolver essa pendência. Responda esta mensagem para negociarmos.\n\n{empresa}'],
-  ['Empréstimo liberado',
-    'Olá {primeiro_nome}! Seu empréstimo de {valor_emprestado} foi liberado. ✅\n\nTotal a pagar: {total_emprestimo} em {qtd_parcelas} parcela(s).\nDatas de cobrança:\n{cronograma}\n\nVocê receberá lembretes antes de cada vencimento.\nChave PIX para pagamento: {pix}\n\n{empresa}'],
   ['Recibo de pagamento',
     'Olá {primeiro_nome}! Confirmamos o recebimento de {valor_pago} referente à parcela {parcela}. Saldo devedor restante: {saldo_devedor}. Obrigado!\n\n{empresa}'],
 ];
@@ -193,21 +170,10 @@ const DEFAULT_SETTINGS = {
   wa_webhook_url: '',
   wa_inbound_token: '',
   default_country_code: '55',
-  required_documents: 'RG ou CNH (frente e verso)\nCPF\nComprovante de residência\nComprovante de renda\nSelfie segurando o documento',
-  send_release_message: '1',
-  bot_enabled: '0',
-  bot_new_contact_enabled: '1',
-  bot_welcome: 'Olá! Obrigado pelo contato com {empresa}. 😊\n\nPara analisarmos seu pedido de empréstimo, envie por aqui:\n{documentos}\n\nInforme também o valor desejado. Assim que recebermos, faremos a análise.',
-  bot_menu: 'Olá {primeiro_nome}! Digite:\n*1* – Próxima parcela\n*2* – Saldo devedor\n*3* – Chave PIX\n*4* – Falar com atendente',
-  bot_human_reply: 'Certo! Já avisei o atendente, em breve você será respondido.',
 };
 
 function migrate(db) {
   db.exec(SCHEMA);
-  for (const [table, cols] of Object.entries(EXTRA_COLUMNS)) {
-    const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
-    for (const [col, def] of Object.entries(cols)) if (!have.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
-  }
   const insSetting = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insSetting.run(k, v);
 
@@ -217,10 +183,6 @@ function migrate(db) {
     const ids = DEFAULT_TEMPLATES.map(([n, b]) => Number(insT.run(n, b).lastInsertRowid));
     const insR = db.prepare('INSERT INTO rules(name, trigger, days, repeat_every, max_repeats, template_id, channel) VALUES (?,?,?,?,?,?,?)');
     for (const [n, t, d, r, m, ti] of DEFAULT_RULES) insR.run(n, t, d, r, m, ids[ti], 'whatsapp');
-  }
-  // Garante modelos novos em bancos antigos.
-  for (const [n, b] of DEFAULT_TEMPLATES) {
-    if (!db.prepare('SELECT 1 FROM templates WHERE name=?').get(n)) db.prepare('INSERT INTO templates(name, body) VALUES (?, ?)').run(n, b);
   }
   // Token aleatório para o webhook de entrada, se ainda não existir.
   const tok = db.prepare("SELECT value FROM settings WHERE key='wa_inbound_token'").get();
@@ -254,4 +216,4 @@ function tx(db, fn) {
   }
 }
 
-module.exports = { DATA_DIR, open, getSettings, setSettings, tx, DEFAULT_SETTINGS };
+module.exports = { open, getSettings, setSettings, tx, DEFAULT_SETTINGS };
