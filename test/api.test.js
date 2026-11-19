@@ -88,3 +88,56 @@ test('fluxo completo: cliente, empréstimo, pagamento, automação', async () =>
     server.close();
   }
 });
+
+test('pedido pelo WhatsApp: novo contato, bot, documentos, liberação com confirmação', async () => {
+  const { db, server, call } = await setup();
+  // provedor "webhook" apontando para um servidor de teste que captura os envios
+  const sent = [];
+  const http = require('node:http');
+  const sink = await new Promise((r) => {
+    const s = http.createServer((req, res) => { let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { sent.push(JSON.parse(b)); res.end('{"id":1}'); }); });
+    s.listen(0, () => r(s));
+  });
+  try {
+    await call('POST', '/api/auth/setup', { password: 'segredo123' });
+    await call('PUT', '/api/settings', { wa_provider: 'webhook', wa_webhook_url: `http://127.0.0.1:${sink.address().port}/`, bot_enabled: '1', pix_key: 'chave-pix' });
+    const tok = db.prepare("SELECT value FROM settings WHERE key='wa_inbound_token'").get().value;
+
+    // 1) Pessoa desconhecida chama no WhatsApp → vira "novo contato" e recebe a lista de documentos
+    await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '5511977776666@s.whatsapp.net', fromMe: false, id: 'A1' }, pushName: 'Carlos Lima', message: { conversation: 'Oi, quero um empréstimo de 1000' } } });
+    const pipe = (await call('GET', '/api/pipeline')).data;
+    assert.strictEqual(pipe.lead.length, 1);
+    assert.strictEqual(pipe.lead[0].name, 'Carlos Lima');
+    assert.ok(sent[0].message.includes('Comprovante de residência'));
+    const id = pipe.lead[0].id;
+
+    // Mensagens de grupo são ignoradas
+    await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '123-456@g.us', fromMe: false, id: 'G1' }, message: { conversation: 'oi' } } });
+    assert.strictEqual((await call('GET', '/api/pipeline')).data.lead.length, 1);
+
+    // 2) Análise: documentos e checklist
+    await call('POST', `/api/clients/${id}/stage`, { stage: 'analysis' });
+    const doc = await call('POST', `/api/clients/${id}/documents`, { name: 'CPF', filename: 'cpf.png', mime: 'image/png', data: Buffer.from('fake').toString('base64') });
+    assert.strictEqual(doc.status, 201);
+    const det = (await call('GET', `/api/clients/${id}`)).data;
+    assert.strictEqual(det.doc_checklist.CPF, true);
+    assert.strictEqual(det.documents.length, 1);
+    assert.strictEqual((await call('GET', `/api/documents/${doc.data.id}`)).data, 'fake');
+    await call('POST', `/api/clients/${id}/stage`, { stage: 'approved' });
+
+    // 3) Liberação: vira cliente e recebe confirmação com as datas
+    const loan = (await call('POST', '/api/loans', { client_id: id, principal_cents: 100000, interest_rate: 10, method: 'simple', frequency: 'monthly', installments_count: 2 })).data;
+    assert.strictEqual(loan.confirmation.status, 'sent');
+    assert.ok(loan.confirmation.body.includes('1/2 –') && loan.confirmation.body.includes('2/2 –'));
+    assert.strictEqual((await call('GET', `/api/clients/${id}`)).data.stage, 'client');
+
+    // 4) Bot para cliente ativo
+    const n = sent.length;
+    await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '5511977776666@s.whatsapp.net', fromMe: false, id: 'A2' }, message: { conversation: '1' } } });
+    assert.ok(sent[n].message.includes('próxima parcela') && sent[n].message.includes('R$'));
+    await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '5511977776666@s.whatsapp.net', fromMe: false, id: 'A3' }, message: { conversation: 'qual o pix?' } } });
+    assert.ok(sent[n + 1].message.includes('chave-pix'));
+  } finally {
+    server.close(); sink.close();
+  }
+});

@@ -4,8 +4,18 @@ Aplicativo web de uso pessoal para controlar empréstimos de ponta a ponta: clie
 
 Funciona no computador e no celular (pode ser "instalado" na tela inicial como app).
 
+## Como funciona o fluxo
+
+1. **A pessoa chama no seu WhatsApp** → ela entra automaticamente em **Pedidos → Novos contatos** (com o nome do perfil e a mensagem). Se o bot estiver ativo, ela recebe na hora a lista de documentos que deve enviar.
+2. **Análise**: você conversa pelo WhatsApp, salva no app as fotos/PDFs recebidos, marca o checklist de documentos e move o pedido para *Em análise* → *Aprovado* (ou *Recusado*).
+3. **Liberação**: o botão **Liberar valor** abre o empréstimo já com o valor pedido. Ao confirmar, o contato vira cliente e recebe no WhatsApp a confirmação com **todas as datas de cobrança**.
+4. **Cobrança automática**: pelas regras padrão, o cliente recebe aviso **3 dias antes** de cada vencimento, **no dia**, e, se atrasar, avisos **a partir do 1º dia, repetindo a cada 3 dias** (até 5 vezes) e um aviso de **atraso grave aos 15 dias** (repete semanalmente). Tudo editável em *Automações*.
+5. **Recebimento**: ao registrar o pagamento, o cliente recebe o recibo com o saldo restante.
+
 ## Funcionalidades
 
+- **Pedidos**: funil Novo contato → Em análise → Aprovado/Recusado, checklist de documentos configurável, anexos (fotos e PDFs) e botão "Pedir documentos".
+- **Bot no WhatsApp** (opcional): boas-vindas automáticas para novos contatos com a lista de documentos; para clientes, menu com próxima parcela, saldo devedor, chave PIX e "falar com atendente".
 - **Painel**: valor a receber, capital na rua, valor em atraso e % de inadimplência, recebido no mês, lucro realizado e projetado, gráfico dos últimos 6 meses, atrasados e próximos vencimentos.
 - **Clientes (CRM)**: cadastro com telefone, CPF, endereço, tags e score de confiança; histórico completo de interações (mensagens enviadas, respostas recebidas, anotações, pagamentos), botão direto para o WhatsApp.
 - **Empréstimos**: simulação em tempo real antes de criar; três formas de cálculo:
@@ -31,6 +41,8 @@ Configure em **Configurações → WhatsApp**:
 | **Evolution API** | Envio automático via instância própria (URL, instância e API key). |
 | **Z-API** | Envio automático (ID da instância, token e Client-Token). |
 | **Webhook** | Envia `POST {"phone","message"}` para uma URL sua (n8n, Make, Zapier…). |
+
+Para as mensagens saírem **sozinhas** (sem você tocar em enviar) e para o bot funcionar, escolha um provedor automático. Para uso pessoal com o seu próprio número, **Z-API** (pago, mais simples) ou **Evolution API** (gratuita, precisa hospedar) são as opções mais práticas: enviam texto livre a qualquer hora. A Cloud API oficial exige modelos aprovados pela Meta para mensagens fora da janela de 24h.
 
 **Respostas dos clientes no CRM**: copie a URL de webhook mostrada nas configurações e cadastre no seu provedor (Cloud API, Evolution ou Z-API). As mensagens recebidas aparecem no histórico do cliente e na aba "Mensagens".
 

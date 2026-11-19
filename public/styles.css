@@ -208,3 +208,10 @@ code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-
 [hidden] { display: none !important; }
 .grid > .card, .grid > div > .card:first-child { margin-top: 0; }
 main { min-width: 0; }
+
+.pipeline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.pipeline .card + .card { margin-top: 0; }
+.pipe-card { display: block; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); margin-bottom: 8px; }
+.pipe-card:hover { text-decoration: none; border-color: var(--primary); }
+@media (max-width: 860px) { .pipeline { grid-template-columns: 1fr; } }
+details summary { cursor: pointer; }

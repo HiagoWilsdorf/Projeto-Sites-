@@ -31,8 +31,11 @@ const MSG_STATUS = {
   sent: ['Enviada', 'ok'], pending_manual: ['Envio manual', 'warn'], failed: ['Falhou', 'danger'],
   logged: ['Registrada', ''], received: ['Nova', 'info'], read: ['Recebida', ''],
 };
+const STAGE = { lead: ['Novo contato', 'info'], analysis: ['Em análise', 'warn'], approved: ['Aprovado', 'ok'], rejected: ['Recusado', 'danger'], client: ['Cliente', 'primary'] };
+const stageBadge = (s) => `<span class="badge ${STAGE[s]?.[1] || ''}">${STAGE[s]?.[0] || s}</span>`;
+const BOOL_SETTINGS = ['scheduler_enabled', 'send_receipt_on_payment', 'send_release_message', 'bot_enabled', 'bot_new_contact_enabled'];
 const TRIGGER = { before_due: 'Antes do vencimento', on_due: 'No dia do vencimento', after_due: 'Após o vencimento (atraso)' };
-const VARS = ['nome', 'primeiro_nome', 'parcela', 'valor', 'valor_atualizado', 'vencimento', 'dias_atraso', 'dias_para_vencer', 'saldo_devedor', 'valor_emprestado', 'total_emprestimo', 'qtd_parcelas', 'pix', 'empresa', 'hoje', 'valor_pago'];
+const VARS = ['cronograma', 'documentos', 'nome', 'primeiro_nome', 'parcela', 'valor', 'valor_atualizado', 'vencimento', 'dias_atraso', 'dias_para_vencer', 'saldo_devedor', 'valor_emprestado', 'total_emprestimo', 'qtd_parcelas', 'pix', 'empresa', 'hoje', 'valor_pago'];
 
 function situationBadge(i) {
   switch (i.situation) {
@@ -110,6 +113,7 @@ function openWa(link) {
 // ---------- Layout / Rotas ----------
 const NAV = [
   ['dashboard', '📊', 'Painel'],
+  ['pedidos', '📥', 'Pedidos'],
   ['cobrancas', '🔔', 'Cobranças'],
   ['clientes', '👥', 'Clientes'],
   ['emprestimos', '💰', 'Empréstimos'],
@@ -118,8 +122,8 @@ const NAV = [
   ['relatorios', '📈', 'Relatórios'],
   ['config', '🔧', 'Configurações'],
 ];
-const MOBILE_NAV = ['dashboard', 'cobrancas', 'clientes', 'emprestimos', 'mensagens', 'config'];
-let badges = { cobrancas: 0, mensagens: 0 };
+const MOBILE_NAV = ['dashboard', 'pedidos', 'cobrancas', 'clientes', 'mensagens', 'mais'];
+let badges = { pedidos: 0, cobrancas: 0, mensagens: 0 };
 
 function shell() {
   if ($('#main')) return;
@@ -131,7 +135,7 @@ function shell() {
       <a class="btn sm" href="#" id="logout">Sair</a>
     </aside>
     <main id="main"></main>
-    <nav class="mobile-nav">${NAV.filter(([k]) => MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t.split(' ')[0]}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
+    <nav class="mobile-nav">${[...NAV, ['mais', '☰', 'Mais']].filter(([k]) => MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t.split(' ')[0]}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
   </div>`;
   $('#logout').onclick = async (e) => { e.preventDefault(); await api('POST', '/auth/logout'); renderAuth(); };
 }
@@ -145,7 +149,7 @@ function setBadges() {
 async function refreshBadges() {
   try {
     const d = await api('GET', '/dashboard');
-    badges = { cobrancas: d.overdue.length + d.upcoming.filter((u) => u.situation === 'due_today').length, mensagens: d.totals.pending_manual + d.totals.unread_inbound };
+    badges = { pedidos: d.totals.pending_requests, cobrancas: d.overdue.length + d.upcoming.filter((u) => u.situation === 'due_today').length, mensagens: d.totals.pending_manual + d.totals.unread_inbound };
     setBadges();
   } catch { /* ignore */ }
 }
@@ -154,6 +158,8 @@ const routes = [
   [/^\/?$/, () => go('/dashboard')],
   [/^\/dashboard$/, pageDashboard],
   [/^\/cobrancas$/, pageCollections],
+  [/^\/pedidos$/, pagePipeline],
+  [/^\/mais$/, pageMore],
   [/^\/clientes$/, pageClients],
   [/^\/clientes\/(\d+)$/, pageClient],
   [/^\/emprestimos$/, pageLoans],
@@ -172,7 +178,8 @@ async function router() {
   const query = new URLSearchParams(qs || '');
   shell();
   const key = path.split('/')[1] || 'dashboard';
-  for (const a of $$('[data-nav]')) a.classList.toggle('active', a.dataset.nav === key);
+  const MORE = ['emprestimos', 'automacoes', 'relatorios', 'config', 'mais'];
+  for (const a of $$('[data-nav]')) a.classList.toggle('active', a.dataset.nav === key || (a.dataset.nav === 'mais' && MORE.includes(key) && !!a.closest('.mobile-nav')));
   const main = $('#main');
   for (const [re, fn] of routes) {
     const m = path.match(re);
@@ -356,8 +363,9 @@ async function pageDashboard(main) {
       <div class="kpi"><div class="label">Lucro realizado</div><div class="value">${brl(t.profit_realized)}</div><div class="sub">juros + encargos recebidos</div></div>
       <div class="kpi"><div class="label">Lucro projetado</div><div class="value">${brl(t.expected_profit)}</div><div class="sub">se tudo for pago</div></div>
     </div>
-    ${t.pending_manual || t.unread_inbound || t.failed_messages ? `<div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    ${t.pending_manual || t.unread_inbound || t.failed_messages || t.pending_requests ? `<div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <strong>Atenção:</strong>
+      ${t.pending_requests ? `<a class="badge primary" href="#/pedidos">${t.pending_requests} pedido(s) em andamento</a>` : ''}
       ${t.pending_manual ? `<a class="badge warn" href="#/mensagens?status=pending_manual">${t.pending_manual} mensagem(ns) aguardando envio manual</a>` : ''}
       ${t.unread_inbound ? `<a class="badge info" href="#/mensagens?status=received">${t.unread_inbound} resposta(s) de clientes</a>` : ''}
       ${t.failed_messages ? `<a class="badge danger" href="#/mensagens?status=failed">${t.failed_messages} falha(s) de envio</a>` : ''}
@@ -449,12 +457,13 @@ async function pageClients(main, query) {
 }
 
 function clientDialog(c, onSaved) {
-  c = c || { score: 3, whatsapp_opt_in: 1 };
+  c = c || { score: 3, whatsapp_opt_in: 1, stage: 'client' };
   modal(c.id ? 'Editar cliente' : 'Novo cliente', `<form class="form-grid">
     <div class="field full"><label>Nome completo *</label><input name="name" value="${esc(c.name)}" required></div>
     <div class="field"><label>WhatsApp / Telefone</label><input name="phone" inputmode="tel" placeholder="(11) 99999-9999" value="${esc(c.phone)}"></div>
     <div class="field"><label>CPF / Documento</label><input name="document" value="${esc(c.document)}"></div>
     <div class="field"><label>E-mail</label><input type="email" name="email" value="${esc(c.email)}"></div>
+    ${c.stage !== 'client' ? `<div class="field"><label>Valor solicitado (R$)</label><input name="requested" inputmode="decimal" value="${c.requested_cents ? centsToInput(c.requested_cents) : ''}"></div>` : ''}
     <div class="field"><label>Score (confiança)</label><select name="score">${[5, 4, 3, 2, 1].map((n) => `<option value="${n}" ${n == c.score ? 'selected' : ''}>${stars(n)}</option>`).join('')}</select></div>
     <div class="field full"><label>Endereço</label><input name="address" value="${esc(c.address)}"></div>
     <div class="field full"><label>Tags</label><input name="tags" placeholder="ex.: indicação, comércio" value="${esc(c.tags)}"></div>
@@ -467,7 +476,10 @@ function clientDialog(c, onSaved) {
       m.querySelector('form').onsubmit = (e) => {
         e.preventDefault();
         guard(async () => {
-          const saved = await api(c.id ? 'PUT' : 'POST', c.id ? `/clients/${c.id}` : '/clients', formData(e.target));
+          const f = formData(e.target);
+          if ('requested' in f) f.requested_cents = toCents(f.requested);
+          if (!c.id) f.stage = c.stage;
+          const saved = await api(c.id ? 'PUT' : 'POST', c.id ? `/clients/${c.id}` : '/clients', f);
           close(); toast('Cliente salvo'); onSaved?.(saved);
         }, e.submitter);
       };
@@ -480,14 +492,16 @@ async function pageClient(main, id) {
   const balance = c.loans.reduce((s, l) => s + (l.status === 'active' ? l.balance_cents : 0), 0);
   const overdue = c.loans.reduce((s, l) => s + (l.status === 'active' ? l.overdue_cents : 0), 0);
   const reload = () => pageClient(main, id);
-  main.innerHTML = `<div class="page-head"><div><a href="#/clientes" class="small">← Clientes</a><h1>${esc(c.name)} ${c.archived ? '<span class="badge">Arquivado</span>' : ''}</h1>
+  const isRequest = c.stage !== 'client';
+  main.innerHTML = `<div class="page-head"><div><a href="#/${isRequest ? 'pedidos' : 'clientes'}" class="small">← ${isRequest ? 'Pedidos' : 'Clientes'}</a><h1>${esc(c.name)} ${stageBadge(c.stage)} ${c.archived ? '<span class="badge">Arquivado</span>' : ''}</h1>
     <div class="muted small">${esc(c.phone || 'sem telefone')} ${c.document ? '· ' + esc(c.document) : ''} · <span class="stars">${stars(c.score)}</span></div></div>
     <div class="actions">
       ${c.wa_link ? `<a class="btn wa" href="${esc(c.wa_link)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
       <button class="btn" id="send-msg">Enviar mensagem</button>
       <button class="btn" id="edit">Editar</button>
       <a class="btn primary" href="#/emprestimos/novo?cliente=${c.id}">+ Empréstimo</a></div></div>
-    <div class="kpis">
+    ${isRequest ? analysisCard(c) : ''}
+    <div class="kpis" ${isRequest && !c.loans.length ? 'hidden' : ''}>
       <div class="kpi primary"><div class="label">Saldo devedor</div><div class="value">${brl(balance)}</div></div>
       <div class="kpi danger"><div class="label">Em atraso</div><div class="value">${brl(overdue)}</div></div>
       <div class="kpi"><div class="label">Total já pago</div><div class="value">${brl(c.loans.reduce((s, l) => s + l.paid_cents, 0))}</div></div>
@@ -509,6 +523,7 @@ async function pageClient(main, id) {
           <div class="btn-row" style="margin-top:12px"><button class="btn sm" id="archive">${c.archived ? 'Desarquivar' : 'Arquivar'}</button>
           ${c.loans.length ? '' : '<button class="btn sm danger" id="del">Excluir</button>'}</div>
         </div>
+        ${documentsCard(c)}
         ${c.payments.length ? `<div class="card"><h2>Pagamentos</h2>${c.payments.slice(0, 15).map((p) => `<div class="list-item"><div class="main"><strong class="num">${brl(p.amount_cents)}</strong>
           <span class="small muted">${dateBR(p.paid_at)} · empréstimo #${p.loan_id} parcela ${p.number} · ${esc(p.method || '')}</span></div></div>`).join('')}</div>` : ''}
       </div>
@@ -523,8 +538,102 @@ async function pageClient(main, id) {
   if ($('#del')) $('#del').onclick = async () => { if (await confirmDialog('Excluir este cliente definitivamente?', 'Excluir')) guard(async () => { await api('DELETE', `/clients/${c.id}`); go('/clientes'); }); };
   $('#note-form').onsubmit = (e) => { e.preventDefault(); const f = formData(e.target); guard(async () => { await api('POST', `/clients/${c.id}/notes`, f); reload(); }, e.submitter); };
   bindMessageActions(main, reload);
+  bindAnalysis(main, c, reload);
   refreshBadges();
 }
+
+function analysisCard(c) {
+  const docs = c.required_documents || [];
+  const ok = docs.filter((d) => c.doc_checklist[d]).length;
+  return `<div class="card" style="margin-bottom:16px;border-color:var(--primary)">
+    <div class="page-head" style="margin-bottom:10px"><div><h2 style="margin:0">Análise do pedido</h2>
+      <div class="small muted">Valor solicitado: <strong>${c.requested_cents ? brl(c.requested_cents) : 'não informado'}</strong> · Documentos: ${ok}/${docs.length}</div></div>
+      <div class="btn-row">
+        ${c.stage !== 'analysis' ? '<button class="btn sm" data-stage="analysis">Em análise</button>' : ''}
+        ${c.stage !== 'approved' ? '<button class="btn sm" data-stage="approved">✓ Aprovar</button>' : ''}
+        ${c.stage !== 'rejected' ? '<button class="btn sm danger" data-stage="rejected">✕ Recusar</button>' : ''}
+        <button class="btn sm" id="ask-docs">Pedir documentos</button>
+        <a class="btn sm primary" href="#/emprestimos/novo?cliente=${c.id}${c.requested_cents ? `&valor=${c.requested_cents}` : ''}">💸 Liberar valor</a>
+      </div></div>
+    <div class="progress" style="margin-bottom:10px"><div style="width:${docs.length ? (ok / docs.length) * 100 : 0}%"></div></div>
+    <div class="grid cols-2" style="gap:4px 16px">${docs.map((d) => `<label class="check"><input type="checkbox" data-doc="${esc(d)}" ${c.doc_checklist[d] ? 'checked' : ''}> ${esc(d)}</label>`).join('')}</div>
+  </div>`;
+}
+
+function documentsCard(c) {
+  const docs = c.required_documents || [];
+  return `<div class="card"><h2>Documentos</h2>
+    ${c.documents.length ? c.documents.map((d) => `<div class="list-item"><div class="main"><strong>${esc(d.name)}</strong>
+      <span class="small muted">${dateTimeBR(d.created_at)} · ${Math.max(1, Math.round(d.size / 1024))} KB</span></div>
+      <div class="btn-row"><a class="btn sm" href="/api/documents/${d.id}" target="_blank" rel="noopener">Ver</a><button class="btn sm danger" data-del-doc="${d.id}">🗑</button></div></div>`).join('') : '<div class="muted small" style="margin-bottom:8px">Nenhum arquivo. Salve aqui as fotos/PDFs recebidos no WhatsApp.</div>'}
+    <form id="doc-form" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <select name="name" style="flex:1;min-width:160px">${docs.map((d) => `<option>${esc(d)}</option>`).join('')}<option value="">Outro</option></select>
+      <label class="btn" style="margin:0;color:var(--text)">📎 Anexar<input type="file" name="file" accept="image/*,application/pdf" multiple hidden></label>
+    </form></div>`;
+}
+
+function bindAnalysis(root, c, reload) {
+  for (const b of $$('[data-stage]', root)) b.onclick = () => guard(async () => {
+    await api('POST', `/clients/${c.id}/stage`, { stage: b.dataset.stage });
+    toast(`Pedido: ${STAGE[b.dataset.stage][0]}`); refreshBadges(); reload();
+  }, b);
+  for (const cb of $$('[data-doc]', root)) cb.onchange = () => guard(async () => { await api('PUT', `/clients/${c.id}/checklist`, { [cb.dataset.doc]: cb.checked }); reload(); });
+  const ask = $('#ask-docs', root);
+  if (ask) ask.onclick = () => guard(async () => {
+    const missing = (c.required_documents || []).filter((d) => !c.doc_checklist[d]);
+    const list = missing.map((d) => '• ' + d).join('\n') || '{documentos}';
+    const body = `Olá {primeiro_nome}! Para darmos andamento à análise do seu pedido, envie por aqui:\n${list}\n\n{empresa}`;
+    messageDialog({ clientId: c.id, templates: [{ id: -1, name: 'Pedir documentos', body }], templateId: -1, title: 'Pedir documentos', onDone: reload });
+  }, ask);
+  for (const b of $$('[data-del-doc]', root)) b.onclick = async () => {
+    if (await confirmDialog('Excluir este documento?', 'Excluir')) guard(async () => { await api('DELETE', `/documents/${b.dataset.delDoc}`); reload(); });
+  };
+  const form = $('#doc-form', root);
+  if (form) form.file.onchange = () => guard(async () => {
+    const files = [...form.file.files];
+    for (const f of files) {
+      if (f.size > 20 * 1024 * 1024) throw new Error(`${f.name}: arquivo maior que 20 MB`);
+      const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
+      await api('POST', `/clients/${c.id}/documents`, { name: form.name.value || f.name, filename: f.name, mime: f.type, data });
+    }
+    toast(`${files.length} arquivo(s) anexado(s)`); reload();
+  });
+}
+
+// ---------- Pedidos (funil de análise) ----------
+async function pagePipeline(main) {
+  const d = await api('GET', '/pipeline');
+  const reload = () => pagePipeline(main);
+  const col = (key, title, hint) => `<div class="card pipe-col"><h2>${title} <span class="badge">${d[key].length}</span></h2><div class="small muted" style="margin:-8px 0 10px">${hint}</div>
+    ${d[key].length ? d[key].map((c) => `<a class="pipe-card" href="#/clientes/${c.id}">
+      <div style="display:flex;justify-content:space-between;gap:8px"><strong>${esc(c.name)}</strong>${c.unread ? `<span class="badge count">${c.unread}</span>` : ''}</div>
+      <div class="small muted">${esc(c.phone || '')}${c.requested_cents ? ` · <strong>${brl(c.requested_cents)}</strong>` : ''}</div>
+      ${c.docs_total ? `<div class="small muted" style="margin-top:4px">Documentos ${c.docs_ok}/${c.docs_total}${c.doc_files ? ` · ${c.doc_files} arquivo(s)` : ''}</div>
+      <div class="progress" style="margin-top:4px;height:5px"><div style="width:${(c.docs_ok / c.docs_total) * 100}%"></div></div>` : ''}
+      ${c.last_inbound ? `<div class="small pre" style="margin-top:6px;color:var(--muted)">“${esc(c.last_inbound.slice(0, 90))}${c.last_inbound.length > 90 ? '…' : ''}”</div>` : ''}
+      <div class="small muted" style="margin-top:4px">${dateTimeBR(c.last_activity || c.created_at)}${c.source === 'whatsapp' ? ' · via WhatsApp' : ''}</div>
+    </a>`).join('') : '<div class="empty small">Vazio</div>'}</div>`;
+  main.innerHTML = `<div class="page-head"><div><h1>Pedidos de empréstimo</h1><div class="muted small">Quem chamar no WhatsApp entra aqui automaticamente. Analise os documentos, aprove e libere o valor.</div></div>
+    <div class="actions"><button class="btn primary" id="new-req">+ Novo pedido</button></div></div>
+    <div class="pipeline">
+      ${col('lead', '📥 Novos contatos', 'Chegaram pelo WhatsApp ou cadastrados por você')}
+      ${col('analysis', '🔎 Em análise', 'Aguardando/conferindo documentos')}
+      ${col('approved', '✅ Aprovados', 'Prontos para liberar o valor')}
+    </div>
+    ${d.rejected.length ? `<details class="card" style="margin-top:16px"><summary><strong>Recusados (${d.rejected.length})</strong></summary>
+      ${d.rejected.map((c) => `<div class="list-item"><div class="main"><strong><a href="#/clientes/${c.id}">${esc(c.name)}</a></strong><span class="small muted">${esc(c.phone || '')}</span></div></div>`).join('')}</details>` : ''}`;
+  $('#new-req').onclick = () => clientDialog({ score: 3, whatsapp_opt_in: 1, stage: 'lead' }, (c) => go(`/clientes/${c.id}`));
+  void reload;
+}
+
+function pageMore(main) {
+  main.innerHTML = `<div class="page-head"><h1>Mais</h1></div><div class="card">
+    ${[['emprestimos', '💰', 'Empréstimos'], ['automacoes', '⚙️', 'Automações de cobrança'], ['relatorios', '📈', 'Relatórios'], ['config', '🔧', 'Configurações (WhatsApp, bot, PIX)']]
+    .map(([k, i, t]) => `<a class="list-item" href="#/${k}" style="color:var(--text)"><span>${i} ${t}</span><span class="muted">›</span></a>`).join('')}
+    <a class="list-item" href="#" id="logout-m" style="color:var(--danger)"><span>Sair</span></a></div>`;
+  $('#logout-m').onclick = async (e) => { e.preventDefault(); await api('POST', '/auth/logout'); renderAuth(); };
+}
+
 
 function msgBubble(m) {
   const cls = m.direction === 'in' ? 'in' : m.direction === 'note' ? 'note' : 'out';
@@ -569,16 +678,17 @@ async function pageLoans(main, query) {
 }
 
 async function pageNewLoan(main, query) {
-  const [clients, settings] = await Promise.all([api('GET', '/clients'), api('GET', '/settings')]);
+  const [clients, settings] = await Promise.all([api('GET', '/clients?stage=all'), api('GET', '/settings')]);
+  const preValue = query?.get?.('valor');
   const pre = query?.get?.('cliente');
   const today = todayISO();
   main.innerHTML = `<div class="page-head"><div><a href="#/emprestimos" class="small">← Empréstimos</a><h1>Novo empréstimo</h1></div></div>
     <div class="grid cols-2">
       <form class="card" id="loan-form"><div class="form-grid">
         <div class="field full"><label>Cliente *</label><div style="display:flex;gap:8px"><select name="client_id" required><option value="">Selecione…</option>
-          ${clients.map((c) => `<option value="${c.id}" ${c.id == pre ? 'selected' : ''}>${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}</option>`).join('')}</select>
+          ${clients.map((c) => `<option value="${c.id}" ${c.id == pre ? 'selected' : ''}>${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}${c.stage !== 'client' ? ' · ' + STAGE[c.stage][0] : ''}</option>`).join('')}</select>
           <button type="button" class="btn" id="add-client" title="Novo cliente">+</button></div></div>
-        <div class="field"><label>Valor emprestado (R$) *</label><input name="principal" inputmode="decimal" placeholder="1.000,00" required></div>
+        <div class="field"><label>Valor emprestado (R$) *</label><input name="principal" inputmode="decimal" placeholder="1.000,00" value="${preValue ? centsToInput(preValue) : ''}" required></div>
         <div class="field"><label>Data do empréstimo</label><input type="date" name="start_date" value="${today}"></div>
         <div class="field"><label>Frequência das parcelas</label><select name="frequency">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div class="field"><label>Nº de parcelas</label><input type="number" name="installments_count" min="1" max="600" value="1"></div>
@@ -589,8 +699,9 @@ async function pageNewLoan(main, query) {
         <div class="field"><label>Multa por atraso (%)</label><input name="late_fee_percent" inputmode="decimal" value="${esc(settings.default_late_fee_percent)}"></div>
         <div class="field"><label>Juros de mora (% ao dia)</label><input name="late_interest_daily" inputmode="decimal" value="${esc(settings.default_late_interest_daily)}"></div>
         <div class="field full"><label>Observações / garantia</label><textarea name="notes" rows="3"></textarea></div>
+        <div class="field full"><label class="check"><input type="checkbox" name="send_confirmation" ${settings.send_release_message === '1' ? 'checked' : ''}> Enviar ao cliente, no WhatsApp, a confirmação com todas as datas de cobrança</label></div>
       </div>
-      <div class="modal-foot"><a class="btn" href="#/emprestimos">Cancelar</a><button class="btn primary">Criar empréstimo</button></div></form>
+      <div class="modal-foot"><a class="btn" href="#/emprestimos">Cancelar</a><button class="btn primary">Liberar empréstimo</button></div></form>
       <div class="card" id="sim"><h2>Simulação</h2><div class="empty">Preencha o valor para ver as parcelas</div></div>
     </div>`;
   const form = $('#loan-form');
@@ -620,6 +731,7 @@ async function pageNewLoan(main, query) {
   };
   form.oninput = simulate;
   form.onchange = simulate;
+  if (preValue) simulate();
   $('#add-client').onclick = () => clientDialog(null, (c) => {
     form.client_id.insertAdjacentHTML('beforeend', `<option value="${c.id}">${esc(c.name)}</option>`);
     form.client_id.value = c.id;
@@ -628,7 +740,12 @@ async function pageNewLoan(main, query) {
     e.preventDefault();
     guard(async () => {
       const l = await api('POST', '/loans', payload());
-      toast('Empréstimo criado');
+      toast('Empréstimo liberado');
+      const cf = l.confirmation;
+      if (cf?.status === 'pending_manual' && cf.wa_link && await confirmDialog('Abrir o WhatsApp para enviar a confirmação com as datas de cobrança?', 'Abrir WhatsApp')) {
+        openWa(cf.wa_link);
+        await api('POST', `/messages/${cf.id}/mark-sent`);
+      } else if (cf?.status === 'failed') toast('Confirmação não enviada: ' + cf.error, 'error');
       refreshBadges();
       go(`/emprestimos/${l.id}`);
     }, e.submitter);
@@ -866,6 +983,20 @@ async function pageSettings(main) {
       <div class="field"><label>Verificar a cada (minutos)</label><input type="number" min="1" name="scheduler_interval_minutes" value="${esc(s.scheduler_interval_minutes)}"></div>
       <div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="send_receipt_on_payment" ${s.send_receipt_on_payment === '1' ? 'checked' : ''}> Enviar recibo ao registrar pagamento</label></div>
     </div></div>
+    <div class="card"><h2>Pedidos e liberação</h2>
+      <div class="field"><label>Documentos exigidos para análise (um por linha)</label><textarea name="required_documents" rows="5">${esc(s.required_documents)}</textarea></div>
+      <label class="check"><input type="checkbox" name="send_release_message" ${s.send_release_message === '1' ? 'checked' : ''}> Ao liberar um empréstimo, enviar ao cliente a confirmação com as datas de cobrança</label>
+    </div>
+    <div class="card"><h2>Bot de atendimento no WhatsApp</h2>
+      <p class="small muted" style="margin-top:-6px">Responde sozinho às mensagens recebidas. Requer envio automático (Cloud API, Evolution, Z-API ou Webhook) e o webhook de respostas configurado.</p>
+      <label class="check"><input type="checkbox" name="bot_enabled" ${s.bot_enabled === '1' ? 'checked' : ''}> Ativar bot</label>
+      <label class="check"><input type="checkbox" name="bot_new_contact_enabled" ${s.bot_new_contact_enabled === '1' ? 'checked' : ''}> Responder novos contatos com a lista de documentos</label>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field"><label>Boas-vindas para novos contatos</label><textarea name="bot_welcome" rows="7">${esc(s.bot_welcome)}</textarea><div class="hint">{documentos} = lista acima · {empresa}</div></div>
+        <div class="field"><label>Menu para clientes (ao mandar “oi”, “menu”…)</label><textarea name="bot_menu" rows="7">${esc(s.bot_menu)}</textarea><div class="hint">1 = próxima parcela · 2 = saldo · 3 = PIX · 4 = atendente</div></div>
+        <div class="field full"><label>Resposta ao pedir atendente</label><input name="bot_human_reply" value="${esc(s.bot_human_reply)}"></div>
+      </div>
+    </div>
     <div class="card"><h2>WhatsApp</h2>
       <div class="field"><label>Forma de envio</label><select name="wa_provider">
         <option value="manual">Manual — abre o WhatsApp com a mensagem pronta (sem custo, sem configuração)</option>
@@ -917,13 +1048,13 @@ async function pageSettings(main) {
   form.onsubmit = (e) => {
     e.preventDefault();
     const f = formData(form);
-    for (const k of ['scheduler_enabled', 'send_receipt_on_payment']) f[k] = f[k] ? '1' : '0';
+    for (const k of BOOL_SETTINGS) f[k] = f[k] ? '1' : '0';
     for (const k of ['default_late_fee_percent', 'default_late_interest_daily']) f[k] = String(f[k]).replace(',', '.');
     guard(async () => { await api('PUT', '/settings', f); toast('Configurações salvas'); $('#brand-name').textContent = f.business_name; reload(); }, e.submitter);
   };
   $('#test-wa').onclick = (e) => guard(async () => {
     const f = formData(form);
-    for (const k of ['scheduler_enabled', 'send_receipt_on_payment']) f[k] = f[k] ? '1' : '0';
+    for (const k of BOOL_SETTINGS) f[k] = f[k] ? '1' : '0';
     await api('PUT', '/settings', f);
     const phone = $('#test-phone').value;
     const r = await api('POST', '/settings/test-whatsapp', { phone });
