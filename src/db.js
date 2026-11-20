@@ -39,6 +39,9 @@ async function connect({ url = process.env.DATABASE_URL || process.env.POSTGRES_
       close: () => pool.end(),
     };
   } else {
+    if (process.env.VERCEL) {
+      throw Object.assign(new Error('Banco de dados não configurado: conecte o Postgres (Neon) ao projeto na Vercel.'), { status: 503 });
+    }
     const { PGlite } = require('@electric-sql/pglite');
     const target = dir === undefined ? path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'pglite') : dir;
     if (target) require('node:fs').mkdirSync(target, { recursive: true });
