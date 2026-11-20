@@ -1,141 +1,251 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { open } = require('../server/db');
-const { createApp } = require('../server/app');
-const { runAutomations } = require('../server/scheduler');
-const F = require('../server/finance');
+const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { connect } = require('../src/db');
+const { createApp } = require('../src/app');
+const { createStorage } = require('../src/storage');
+const { runAutomations } = require('../src/scheduler');
+const F = require('../src/finance');
 
 async function setup() {
-  const db = open(':memory:');
-  const app = createApp(db);
+  const db = await connect({ url: '', dir: '' });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emp-'));
+  const app = createApp({ db, storage: createStorage({ dir }) });
   const server = await new Promise((r) => { const s = app.listen(0, () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  let cookie = '';
-  const call = async (method, url, body) => {
-    const res = await fetch(base + url, {
-      method, headers: { 'Content-Type': 'application/json', cookie }, body: body ? JSON.stringify(body) : undefined,
-    });
-    const sc = res.headers.get('set-cookie');
-    if (sc) cookie = sc.split(';')[0];
-    const data = res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text();
-    return { status: res.status, data };
+  // Cada "navegador" tem seu próprio cookie.
+  const browser = () => {
+    let cookie = '';
+    let account = '';
+    const call = async (method, url, body, headers = {}) => {
+      const isBuf = Buffer.isBuffer(body);
+      const res = await fetch(base + url, {
+        method,
+        headers: { ...(isBuf ? {} : { 'Content-Type': 'application/json' }), cookie, ...(account ? { 'x-account': account } : {}), ...headers },
+        body: body == null ? undefined : isBuf ? body : JSON.stringify(body),
+      });
+      const sc = res.headers.get('set-cookie');
+      if (sc) cookie = sc.split(';')[0];
+      const data = res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text();
+      return { status: res.status, data };
+    };
+    call.setAccount = (id) => { account = id ? String(id) : ''; };
+    return call;
   };
-  return { db, server, call };
+  return { db, server, browser, close: async () => { server.close(); await db.close(); fs.rmSync(dir, { recursive: true, force: true }); } };
 }
 
-test('fluxo completo: cliente, empréstimo, pagamento, automação', async () => {
-  const { db, server, call } = await setup();
-  try {
-    assert.strictEqual((await call('GET', '/api/dashboard')).status, 401);
-    assert.strictEqual((await call('POST', '/api/auth/setup', { password: 'segredo123' })).status, 200);
-
-    const c = (await call('POST', '/api/clients', { name: 'Maria Souza', phone: '(11) 98888-7777' })).data;
-    assert.ok(c.id);
-
-    const today = F.todayIn('America/Sao_Paulo');
-    // empréstimo começado há 2 meses, 3 parcelas mensais → 1ª já vencida
-    const start = F.addMonths(today, -2);
-    const loanRes = await call('POST', '/api/loans', {
-      client_id: c.id, principal_cents: 100000, interest_rate: 10, method: 'simple', frequency: 'monthly',
-      installments_count: 3, start_date: start, first_due_date: F.addDays(F.addMonths(start, 1), 0),
+function sink() {
+  const sent = [];
+  return new Promise((r) => {
+    const s = http.createServer((req, res) => {
+      let b = '';
+      req.on('data', (c) => { b += c; });
+      req.on('end', () => { sent.push(JSON.parse(b || '{}')); res.setHeader('Content-Type', 'application/json'); res.end('{"id":1}'); });
     });
-    assert.strictEqual(loanRes.status, 201);
-    const loan = loanRes.data;
-    assert.strictEqual(loan.total_cents, 130000);
-    assert.ok(loan.overdue_count >= 1);
+    s.listen(0, () => r({ sent, url: `http://127.0.0.1:${s.address().port}/`, close: () => s.close() }));
+  });
+}
 
-    const dash = (await call('GET', '/api/dashboard')).data;
-    assert.ok(dash.totals.overdue > 0);
+test('conta central x afiliados: cada um vê só o seu, a central vê tudo', async () => {
+  const t = await setup();
+  try {
+    const admin = t.browser();
+    assert.strictEqual((await admin('GET', '/api/dashboard')).status, 401);
+    const st = await admin('POST', '/api/auth/setup', { name: 'Central', email: 'central@x.com', password: 'segredo1' });
+    assert.strictEqual(st.status, 200);
+    assert.strictEqual((await admin('POST', '/api/auth/setup', { name: 'Outro', email: 'o@x.com', password: 'segredo1' })).status, 400);
 
-    // Automação (modo manual → fica pendente de envio manual)
-    const run = await runAutomations(db, { force: true });
-    assert.ok(run.created >= 1, 'deve gerar mensagem de atraso');
-    const again = await runAutomations(db, { force: true });
-    assert.strictEqual(again.created, 0, 'não deve duplicar mensagens');
-    const pend = (await call('GET', '/api/messages?status=pending_manual')).data;
-    assert.ok(pend.length >= 1 && pend[0].wa_link.startsWith('https://wa.me/5511988887777'));
+    const aff = (await admin('POST', '/api/accounts', { name: 'Afiliado João', email: 'joao@x.com', password: 'senha123' })).data;
+    const aff2 = (await admin('POST', '/api/accounts', { name: 'Afiliada Ana', email: 'ana@x.com', password: 'senha123' })).data;
 
-    // Paga a 1ª parcela integralmente (com encargos)
-    const inst1 = loan.installments[0];
-    const payRes = await call('POST', `/api/installments/${inst1.id}/pay`, { amount_cents: inst1.remaining_cents, paid_at: today, carry_over: false });
-    assert.strictEqual(payRes.status, 200, JSON.stringify(payRes.data));
-    assert.strictEqual(payRes.data.applied[0].settled, true);
+    const joao = t.browser();
+    assert.strictEqual((await joao('POST', '/api/auth/login', { email: 'joao@x.com', password: 'errada' })).status, 401);
+    assert.strictEqual((await joao('POST', '/api/auth/login', { email: 'JOAO@x.com', password: 'senha123' })).status, 200);
+    const ana = t.browser();
+    await ana('POST', '/api/auth/login', { email: 'ana@x.com', password: 'senha123' });
 
-    // Paga o restante de uma vez (transborda para as demais parcelas)
-    const l2 = (await call('GET', `/api/loans/${loan.id}`)).data;
-    const pay2 = await call('POST', `/api/installments/${l2.installments[1].id}/pay`, { amount_cents: l2.balance_cents + 500 });
-    assert.strictEqual(pay2.data.leftover_cents, 500);
-    assert.strictEqual(pay2.data.loan.status, 'paid');
+    // Afiliado cadastra cliente + empréstimo
+    const today = F.todayIn('America/Sao_Paulo');
+    const start = F.addMonths(today, -2);
+    const l1 = await joao('POST', '/api/loans', {
+      new_client: { name: 'Maria Souza', phone: '(11) 98888-7777' }, owner_id: aff2.id, // owner_id é ignorado para afiliado
+      principal_cents: 100000, interest_rate: 10, method: 'simple', frequency: 'monthly', installments_count: 3, start_date: start,
+    });
+    assert.strictEqual(l1.status, 201, JSON.stringify(l1.data));
+    assert.strictEqual(l1.data.owner_id, aff.id);
+    assert.strictEqual(l1.data.confirmation.status, 'pending_manual');
+    assert.ok(l1.data.confirmation.body.includes('1/3 –'));
+    const l2 = await ana('POST', '/api/loans', { new_client: { name: 'Pedro', phone: '21999990000' }, principal_cents: 50000, interest_rate: 5, method: 'price', frequency: 'weekly', installments_count: 4 });
+    assert.strictEqual(l2.status, 201);
 
-    // Estorno reabre o empréstimo
-    const pid = (await call('GET', `/api/loans/${loan.id}`)).data.payments[0].id;
-    const und = await call('DELETE', `/api/payments/${pid}`);
-    assert.strictEqual(und.data.status, 'active');
+    // Isolamento
+    assert.strictEqual((await joao('GET', '/api/clients')).data.length, 1);
+    assert.strictEqual((await joao('GET', `/api/loans/${l2.data.id}`)).status, 404);
+    assert.strictEqual((await joao('GET', `/api/clients/${l2.data.client_id}`)).status, 404);
+    assert.strictEqual((await joao('GET', '/api/accounts')).status, 403);
+    assert.strictEqual((await joao('PUT', '/api/settings', { system_name: 'x' })).status, 403);
+    assert.ok((await joao('GET', '/api/dashboard')).data.totals.overdue > 0);
+    assert.strictEqual((await ana('GET', '/api/dashboard')).data.totals.overdue, 0);
 
-    // CSV
-    const exp = await call('GET', '/api/export/parcelas.csv');
-    assert.ok(String(exp.data).includes('Maria Souza'));
+    // Central vê tudo e pode focar em uma conta
+    assert.strictEqual((await admin('GET', '/api/clients')).data.length, 2);
+    admin.setAccount(aff2.id);
+    const onlyAna = (await admin('GET', '/api/clients')).data;
+    assert.deepStrictEqual(onlyAna.map((c) => c.name), ['Pedro']);
+    admin.setAccount(null);
+    const accounts = (await admin('GET', '/api/accounts')).data;
+    assert.strictEqual(accounts.length, 3);
+    assert.ok(accounts.find((a) => a.id === aff.id).overdue_cents > 0);
+    assert.strictEqual((await admin('GET', `/api/loans/${l1.data.id}`)).status, 200);
 
-    // Webhook de entrada
-    const tok = db.prepare("SELECT value FROM settings WHERE key='wa_inbound_token'").get().value;
-    const wh = await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '5511988887777@s.whatsapp.net', fromMe: false, id: 'X1' }, message: { conversation: 'Já paguei!' } } });
-    assert.strictEqual(wh.status, 200);
-    const detail = (await call('GET', `/api/clients/${c.id}`)).data;
-    assert.ok(detail.messages.some((m) => m.direction === 'in' && m.body === 'Já paguei!'));
-    assert.strictEqual((await call('POST', '/api/webhooks/whatsapp/errado', {})).status, 403);
-  } finally {
-    server.close();
-  }
+    // Pagamento pela central na conta do afiliado
+    const inst = l1.data.installments[0];
+    const pay = await admin('POST', `/api/installments/${inst.id}/pay`, { amount_cents: inst.remaining_cents, carry_over: false, send_receipt: false });
+    assert.strictEqual(pay.status, 200, JSON.stringify(pay.data));
+    assert.strictEqual(pay.data.applied[0].settled, true);
+
+    // Automações geram cobranças por conta, sem duplicar
+    const r1 = await runAutomations(t.db, { force: true });
+    assert.ok(r1.created >= 1);
+    assert.strictEqual((await runAutomations(t.db, { force: true })).created, 0);
+    const msgsJoao = (await joao('GET', '/api/messages?status=pending_manual')).data;
+    assert.ok(msgsJoao.length >= 1 && msgsJoao.every((m) => m.owner_id === aff.id));
+    assert.ok(msgsJoao[0].wa_link.startsWith('https://wa.me/55'));
+
+    // Afiliado desativado não entra
+    await admin('PUT', `/api/accounts/${aff2.id}`, { active: false });
+    assert.strictEqual((await ana('GET', '/api/dashboard')).status, 401);
+    assert.strictEqual((await t.browser()('POST', '/api/auth/login', { email: 'ana@x.com', password: 'senha123' })).status, 403);
+
+    // CSV respeita o escopo
+    const csv = (await joao('GET', '/api/export/clientes.csv')).data;
+    assert.ok(csv.includes('Maria Souza') && !csv.includes('Pedro'));
+  } finally { await t.close(); }
 });
 
-test('cadastro de cliente novo com empréstimo, confirmação automática e conexão Evolution', async () => {
-  const { db, server, call } = await setup();
-  const http = require('node:http');
-  const sent = [];
-  // Simula a Evolution API
-  const evo = await new Promise((r) => {
-    const s = http.createServer((req, res) => {
-      let b = ''; req.on('data', (c) => { b += c; });
-      req.on('end', () => {
-        res.setHeader('Content-Type', 'application/json');
-        if (req.headers.apikey !== 'k') { res.statusCode = 401; return res.end('{}'); }
-        if (req.url === '/instance/connectionState/minha') return res.end('{"instance":{"state":"open"}}');
-        if (req.url === '/instance/connect/minha') return res.end('{"base64":"data:image/png;base64,AAA","pairingCode":"ABCD"}');
-        if (req.url === '/message/sendText/minha') { sent.push(JSON.parse(b)); return res.end('{"key":{"id":"MSG1"}}'); }
-        res.statusCode = 404; res.end('{}');
-      });
-    });
-    s.listen(0, () => r(s));
-  });
+test('WhatsApp → link de cadastro → envio de documentos → aprovação no site', async () => {
+  const t = await setup();
+  const wa = await sink();
   try {
-    await call('POST', '/api/auth/setup', { password: 'segredo123' });
-    await call('PUT', '/api/settings', { wa_provider: 'evolution', wa_evolution_url: `http://127.0.0.1:${evo.address().port}`, wa_evolution_instance: 'minha', wa_evolution_apikey: 'k', pix_key: 'chave-pix' });
+    const admin = t.browser();
+    await admin('POST', '/api/auth/setup', { name: 'Central', email: 'central@x.com', password: 'segredo1' });
+    const aff = (await admin('POST', '/api/accounts', { name: 'Afiliado', email: 'af@x.com', password: 'senha123' })).data;
+    const af = t.browser();
+    await af('POST', '/api/auth/login', { email: 'af@x.com', password: 'senha123' });
+    await af('PUT', '/api/account-settings', { wa_provider: 'webhook', wa_webhook_url: wa.url, pix_key: 'pix-afiliado', business_name: 'Crédito do Afiliado' });
+    const acc = (await af('GET', '/api/account-settings')).data;
+    const hook = new URL(acc.webhook_url).pathname;
 
-    const st = (await call('GET', '/api/whatsapp/status')).data;
-    assert.strictEqual(st.connected, true);
-    const qr = (await call('POST', '/api/whatsapp/qr')).data;
-    assert.ok(qr.image.startsWith('data:image/png'));
+    // 1) Pessoa nova manda mensagem no WhatsApp do afiliado → recebe link de cadastro
+    const anon = t.browser();
+    await anon('POST', hook, { data: { key: { remoteJid: '5511977776666@s.whatsapp.net', fromMe: false, id: 'A1' }, pushName: 'Carlos', message: { conversation: 'Oi, quero um empréstimo' } } });
+    assert.strictEqual(wa.sent.length, 1);
+    assert.ok(wa.sent[0].message.includes('Crédito do Afiliado'));
+    const link = wa.sent[0].message.match(/cadastro\.html\?t=([a-f0-9]+)/);
+    assert.ok(link, wa.sent[0].message);
+    const token = link[1];
+    // grupo é ignorado
+    await anon('POST', hook, { data: { key: { remoteJid: '1203-99@g.us', fromMe: false, id: 'G1' }, message: { conversation: 'oi' } } });
+    assert.strictEqual(wa.sent.length, 1);
+    // outra conta não vê o cadastro
+    assert.strictEqual((await admin('GET', '/api/applications')).data.length, 1);
+    admin.setAccount((await admin('GET', '/api/me')).data.user.id);
+    assert.strictEqual((await admin('GET', '/api/applications')).data.length, 0);
+    admin.setAccount(null);
 
-    // cliente aprovado no WhatsApp é cadastrado junto com o empréstimo
-    const r = await call('POST', '/api/loans', {
-      new_client: { name: 'Carlos Lima', phone: '(11) 97777-6666', document: '123' },
-      principal_cents: 150000, interest_rate: 10, method: 'simple', frequency: 'monthly', installments_count: 3,
-    });
-    assert.strictEqual(r.status, 201, JSON.stringify(r.data));
-    assert.strictEqual(r.data.confirmation.status, 'sent');
-    assert.strictEqual(sent[0].number, '5511977776666');
-    assert.ok(sent[0].text.includes('1/3 –') && sent[0].text.includes('3/3 –') && sent[0].text.includes('chave-pix'));
+    // 2) Cliente preenche o cadastro e envia os documentos pelo link
+    const view = (await anon('GET', `/api/public/apply/${token}`)).data;
+    assert.strictEqual(view.upload_mode, 'local');
+    assert.strictEqual(view.data.phone, '5511977776666');
+    assert.ok(view.document_types.length >= 5);
+    await anon('PUT', `/api/public/apply/${token}`, { name: 'Carlos Lima', phone: '5511977776666', document: '123.456.789-00', requested_cents: 150000 });
+    const early = await anon('POST', `/api/public/apply/${token}/submit`);
+    assert.strictEqual(early.status, 400);
+    assert.ok(early.data.error.includes('Falta enviar'));
+    const uploaded = [];
+    for (const dt of view.document_types) {
+      const ct = dt.kind === 'video' ? 'video/mp4' : dt.kind === 'file' ? 'application/pdf' : 'image/jpeg';
+      const r = await anon('PUT', `/api/public/apply/${token}/upload-local?type=${dt.id}&name=x.${ct.split('/')[1]}`, Buffer.from(`conteudo-${dt.id}`), { 'Content-Type': ct });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+      uploaded.push(r.data);
+    }
+    // formato errado é recusado
+    const badType = await anon('PUT', `/api/public/apply/${token}/upload-local?type=${view.document_types[0].id}&name=a.exe`, Buffer.from('x'), { 'Content-Type': 'application/x-msdownload' });
+    assert.strictEqual(badType.status, 400);
+    const sub = await anon('POST', `/api/public/apply/${token}/submit`);
+    assert.strictEqual(sub.status, 200, JSON.stringify(sub.data));
+    assert.strictEqual(sub.data.status, 'submitted');
+    assert.strictEqual((await anon('PUT', `/api/public/apply/${token}`, { name: 'x' })).status, 400);
 
-    // sem telefone não cadastra
-    const bad = await call('POST', '/api/loans', { new_client: { name: 'Sem Fone' }, principal_cents: 1000, interest_rate: 1, method: 'simple', frequency: 'monthly', installments_count: 1 });
-    assert.strictEqual(bad.status, 400);
+    // Mensagem durante a análise → bot avisa que está em análise
+    await anon('POST', hook, { data: { key: { remoteJid: '5511977776666@s.whatsapp.net', fromMe: false, id: 'A2' }, message: { conversation: 'e aí?' } } });
+    assert.ok(wa.sent[1].message.includes('análise'));
 
-    // número desconhecido no WhatsApp NÃO vira cliente
-    const tok = db.prepare("SELECT value FROM settings WHERE key='wa_inbound_token'").get().value;
-    await call('POST', `/api/webhooks/whatsapp/${tok}`, { data: { key: { remoteJid: '5521900001111@s.whatsapp.net', fromMe: false, id: 'Z1' }, message: { conversation: 'quero empréstimo' } } });
-    assert.strictEqual((await call('GET', '/api/clients')).data.length, 1);
-  } finally {
-    server.close(); evo.close();
-  }
+    // 3) Afiliado analisa: recusa um documento e pede correção
+    const list = (await af('GET', '/api/applications?status=submitted')).data;
+    assert.strictEqual(list.length, 1);
+    const appId = list[0].id;
+    const det = (await af('GET', `/api/applications/${appId}`)).data;
+    assert.strictEqual(det.files.length, view.document_types.length);
+    const file = await af('GET', `/api/files/${det.files[0].id}`);
+    assert.strictEqual(file.data, `conteudo-${view.document_types[0].id}`);
+    assert.strictEqual((await t.browser()('GET', `/api/files/${det.files[0].id}`)).status, 401);
+    assert.strictEqual((await af('PUT', `/api/application-files/${det.files[0].id}`, { status: 'rejected' })).status, 400);
+    await af('PUT', `/api/application-files/${det.files[0].id}`, { status: 'rejected', reason: 'Foto borrada' });
+    const ch = await af('POST', `/api/applications/${appId}/request-changes`, {});
+    assert.strictEqual(ch.status, 200);
+    assert.ok(wa.sent[2].message.includes('Foto borrada') && wa.sent[2].message.includes(token));
+
+    // Cliente reenvia o documento recusado
+    const v2 = (await anon('GET', `/api/public/apply/${token}`)).data;
+    assert.strictEqual(v2.status, 'needs_changes');
+    assert.ok(v2.review_notes.includes('Foto borrada'));
+    await anon('PUT', `/api/public/apply/${token}/upload-local?type=${view.document_types[0].id}&name=n.jpg`, Buffer.from('nova'), { 'Content-Type': 'image/jpeg' });
+    assert.strictEqual((await anon('POST', `/api/public/apply/${token}/submit`)).data.status, 'submitted');
+
+    // 4) Aprova todos os documentos e o cadastro → vira cliente do afiliado
+    const det2 = (await af('GET', `/api/applications/${appId}`)).data;
+    assert.strictEqual((await af('POST', `/api/applications/${appId}/approve`, {})).status, 400); // ainda há pendentes
+    for (const f of det2.files.filter((x) => x.status === 'pending')) await af('PUT', `/api/application-files/${f.id}`, { status: 'approved' });
+    const ap = await af('POST', `/api/applications/${appId}/approve`, {});
+    assert.strictEqual(ap.status, 200, JSON.stringify(ap.data));
+    const client = (await af('GET', `/api/clients/${ap.data.client_id}`)).data;
+    assert.strictEqual(client.name, 'Carlos Lima');
+    assert.strictEqual(client.owner_id, aff.id);
+    assert.ok(client.files.length >= view.document_types.length);
+    assert.ok(wa.sent[3].message.includes('aprovado'));
+
+    // 5) Agora é cliente: bot responde o menu
+    const loan = await af('POST', '/api/loans', { client_id: client.id, principal_cents: 150000, interest_rate: 10, method: 'simple', frequency: 'monthly', installments_count: 3 });
+    assert.strictEqual(loan.data.confirmation.status, 'sent');
+    await anon('POST', hook, { data: { key: { remoteJid: '5511977776666@s.whatsapp.net', fromMe: false, id: 'A3' }, message: { conversation: '1' } } });
+    assert.ok(wa.sent.at(-1).message.includes('próxima parcela'));
+
+    // Link geral da conta (para divulgar)
+    const slug = new URL(acc.signup_url).searchParams.get('c');
+    assert.strictEqual((await anon('GET', `/api/public/signup/${slug}`)).data.business_name, 'Crédito do Afiliado');
+    const s2 = await anon('POST', `/api/public/signup/${slug}`, { name: 'Bia', phone: '(31) 98888-1111' });
+    assert.strictEqual(s2.status, 201);
+    assert.strictEqual((await af('GET', '/api/applications?status=pending')).data.length, 1);
+
+    // token errado no webhook
+    assert.strictEqual((await anon('POST', '/api/webhooks/whatsapp/errado', {})).status, 403);
+  } finally { wa.close(); await t.close(); }
+});
+
+test('cron da Vercel exige o segredo', async () => {
+  const t = await setup();
+  try {
+    const b = t.browser();
+    process.env.CRON_SECRET = 'abc';
+    assert.strictEqual((await b('GET', '/api/cron/automations')).status, 401);
+    const ok = await b('GET', '/api/cron/automations', null, { Authorization: 'Bearer abc' });
+    assert.strictEqual(ok.status, 200);
+    assert.strictEqual(ok.data.created, 0);
+  } finally { delete process.env.CRON_SECRET; await t.close(); }
 });

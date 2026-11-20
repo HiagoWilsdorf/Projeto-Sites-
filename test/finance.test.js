@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const F = require('../server/finance');
+const F = require('../src/finance');
 
 test('addMonths preserva o dia âncora e ajusta fim de mês', () => {
   assert.strictEqual(F.addMonths('2026-01-31', 1), '2026-02-28');

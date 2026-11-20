@@ -1,0 +1,21 @@
+.pub-wrap { max-width: 640px; margin: 0 auto; padding: 20px 16px 60px; }
+.pub-head { text-align: center; margin-bottom: 18px; }
+.pub-head .brand-logo { margin: 0 auto 10px; width: 44px; height: 44px; font-size: 16px; }
+.pub-head h1 { font-size: 20px; }
+.steps { display: flex; gap: 6px; margin: 14px 0 18px; }
+.steps div { flex: 1; height: 5px; border-radius: 99px; background: var(--border); }
+.steps div.on { background: var(--primary); }
+.doc { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px; background: var(--surface); }
+.doc.ok { border-color: var(--ok); }
+.doc.bad { border-color: var(--danger); background: var(--danger-soft); }
+.doc-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.doc-files { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.doc-file { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; background: var(--surface-2); border-radius: 8px; padding: 6px 10px; }
+.upload-btn { margin-top: 10px; width: 100%; }
+.bar { height: 6px; background: var(--surface-2); border-radius: 99px; overflow: hidden; margin-top: 8px; }
+.bar > div { height: 100%; background: var(--primary); width: 0; transition: width .2s; }
+.big-status { text-align: center; padding: 30px 10px; }
+.big-status .icon { font-size: 48px; }
+.notice { border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: 14px; }
+.notice.warn { background: var(--warn-soft); border: 1px solid var(--warn); }
+.notice.info { background: var(--info-soft); border: 1px solid var(--info); }

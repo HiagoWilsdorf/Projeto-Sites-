@@ -1,90 +1,64 @@
 # Gestão de Empréstimos
 
-Aplicativo web de uso pessoal para controlar empréstimos de ponta a ponta: clientes (CRM), contratos, parcelas, recebimentos, juros de atraso, avisos de cobrança automáticos e mensagens pelo WhatsApp.
+Site para gestão de empréstimos com **conta central** e **afiliados**, cadastro de clientes com envio de documentos pelo próprio cliente, análise e aprovação no site, cobranças automáticas e WhatsApp.
 
-Funciona no computador e no celular (pode ser "instalado" na tela inicial como app).
+Hospedagem: **Vercel** (site + funções), **Postgres** (Neon, pela Vercel) e **Vercel Blob privado** (fotos, vídeos e documentos).
 
-## Como funciona o fluxo
+## Contas
 
-1. **Análise e aprovação acontecem no seu WhatsApp** (documentos, conversa, decisão) — fora do app.
-2. **Cliente aprovado → cadastro no app**: em *+ Novo cliente / empréstimo* você cadastra o cliente e o empréstimo na mesma tela.
-3. **Confirmação**: o cliente recebe no WhatsApp a confirmação com todas as datas de cobrança.
-4. **Cobranças automáticas** (regras padrão, editáveis em *Automações*):
-   - **3 dias antes**: “a parcela X, no valor de R$ Y, será cobrada em DD/MM”;
-   - **no dia do vencimento**;
-   - **em atraso**: a partir do 1º dia, repetindo a cada 3 dias (até 5x), e aviso de atraso grave aos 15 dias (semanal);
-5. **Pagamento**: ao registrar, o cliente recebe o recibo com o saldo restante.
+- **Conta central (administrador):** vê 100% de tudo — painéis, clientes, empréstimos, dívidas, cadastros e documentos de todos os afiliados. No menu lateral, o seletor **Visualizando** alterna entre "Todas as contas" e uma conta específica. Cria, edita, desativa afiliados e redefine senhas. Edita regras de cobrança, modelos de mensagem, textos do bot e documentos exigidos.
+- **Afiliado:** login e senha próprios; vê somente os próprios clientes, cadastros, empréstimos, cobranças e painel. Tem o próprio WhatsApp, PIX e link de cadastro.
 
-O app envia **somente mensagens de cobrança**. Respostas dos clientes ficam registradas no histórico de cada cliente; números que não são clientes não são cadastrados.
+O primeiro acesso ao site cria a conta central.
 
-## Funcionalidades
+## Fluxo do cliente
 
-- **Painel**: valor a receber, capital na rua, valor em atraso e % de inadimplência, recebido no mês, lucro realizado e projetado, gráfico dos últimos 6 meses, atrasados e próximos vencimentos.
-- **Clientes (CRM)**: cadastro com telefone, CPF, endereço, tags e score de confiança; histórico completo de interações (mensagens enviadas, respostas recebidas, anotações, pagamentos), botão direto para o WhatsApp.
-- **Empréstimos**: simulação em tempo real antes de criar; três formas de cálculo:
-  - *Juros simples* (parcelas iguais),
-  - *Tabela Price* (juros compostos, parcelas fixas),
-  - *Só juros* (paga juros a cada período e o principal na última);
-  - parcelas mensais, quinzenais, semanais ou diárias; multa e juros de mora configuráveis por contrato.
-- **Recebimentos**: pagamento total ou parcial, cálculo automático de multa + mora até a data do pagamento, opção de isentar encargos, valor excedente abatido nas próximas parcelas, estorno, renegociação de vencimento/valor, recibo automático por WhatsApp.
-- **Cobranças**: agenda com atrasados, vencendo hoje e próximos dias, com botões "Cobrar" (mensagem pronta) e "Receber".
-- **Automações**: regras configuráveis (X dias antes, no dia, X dias após o vencimento com repetição a cada N dias e limite de repetições), modelos de mensagem com variáveis (`{nome}`, `{valor}`, `{valor_atualizado}`, `{dias_atraso}`, `{pix}`, `{saldo_devedor}`…), janela de horário de envio e prevenção de mensagens duplicadas.
-- **Mensagens**: central de envios (enviadas, pendentes de envio manual, falhas, respostas dos clientes).
-- **Relatórios**: recebimentos por período e forma de pagamento, novos empréstimos, pontualidade; exportação CSV (Excel/Google Planilhas).
-- **Segurança e dados**: acesso por senha, backup/restauração em JSON, banco SQLite local.
+1. A pessoa manda mensagem no WhatsApp da central ou de um afiliado.
+2. O bot responde com um **link de cadastro pessoal** (também há um link geral por conta para divulgar).
+3. Pelo link, o cliente preenche os dados e envia **fotos, vídeos e documentos** (tirando na hora ou da galeria).
+4. No site, em **Cadastros**, a conta responsável vê cada arquivo, **aprova ou recusa** com motivo e:
+   - **Pede correções** → o cliente recebe no WhatsApp a lista do que foi recusado e reenvia pelo mesmo link;
+   - **Aprova** → o cliente é criado com todos os dados e documentos, e já pode receber o empréstimo;
+   - **Recusa** → opcionalmente avisa o cliente.
+5. Ao liberar o empréstimo, o cliente recebe a confirmação com **todas as datas de cobrança**.
+6. **Cobranças automáticas** (todo dia pela manhã): 3 dias antes, no dia e em atraso (com repetição), pelo WhatsApp da conta dona do cliente.
+7. Ao registrar pagamento, o cliente recebe o recibo. Clientes podem consultar parcela, saldo e PIX pelo menu do bot.
 
-## WhatsApp — formas de envio
+## WhatsApp por conta
 
-Configure em **Configurações → WhatsApp**:
+Em **Configurações → WhatsApp desta conta**: Z-API ou Evolution API (conexão por QR Code), Cloud API oficial, envio para um CRM próprio (URL) ou modo manual. Cada conta copia a **URL de webhook** mostrada ali para o painel do provedor — é por ela que o site recebe as mensagens (novos contatos e menu do bot).
 
-| Modo | Como funciona |
-|---|---|
-| **Evolution API** / **Z-API** | Conexão direta do seu número: clique em *Conectar com QR Code* em Configurações e leia o código pelo WhatsApp (Aparelhos conectados). O app mostra o status da conexão e avisa no painel se cair. |
-| **Meu CRM / automação** | Cada cobrança vai como `POST {"phone","message"}` para a URL do seu CRM, n8n, Make etc., que faz o envio. |
-| **Manual** (padrão) | Sem custo e sem configuração. As cobranças automáticas ficam em "Mensagens → Envio manual" e o botão abre o WhatsApp (wa.me) com o texto pronto; basta tocar em enviar. |
-| **WhatsApp Cloud API** (Meta, oficial) | Envio 100% automático. Informe token e Phone Number ID. Pela regra da Meta, mensagem livre só é entregue se o cliente falou com você nas últimas 24h; fora disso use modelos aprovados. |
+## Publicação na Vercel
 
-**Respostas dos clientes no CRM**: copie a URL de webhook mostrada nas configurações e cadastre no seu provedor (Cloud API, Evolution ou Z-API). As mensagens recebidas aparecem no histórico do cliente e na aba "Mensagens".
+1. Projeto Vercel ligado a este repositório (o Express é detectado automaticamente; `public/` é servido pela CDN).
+2. **Banco**: Storage → Create Database → **Neon (Postgres)** e conectar ao projeto (cria `DATABASE_URL`). As tabelas são criadas sozinhas no primeiro acesso.
+3. **Arquivos**: Storage → **Blob** com acesso **privado**, conectado ao projeto (cria `BLOB_READ_WRITE_TOKEN`).
+4. Variável `CRON_SECRET` (qualquer texto aleatório) — protege o disparo diário das cobranças (`vercel.json`, 08:30 de Brasília).
+5. Opcional: `PUBLIC_URL` com o domínio final (usado nos links enviados pelo bot).
 
-## Como rodar
+> No plano Hobby da Vercel o agendador roda 1 vez por dia e o uso comercial não é permitido pelos termos da Vercel; para operação comercial use o plano Pro.
 
-Requisitos: **Node.js 22.5+** (usa o SQLite embutido do Node, sem dependências nativas).
+## Desenvolvimento local
 
 ```bash
 npm install
-npm start          # http://localhost:3000
+npm run dev     # http://localhost:3000 — usa Postgres embutido (PGlite) em ./data, sem instalar nada
+npm test        # testes automatizados
 ```
 
-No primeiro acesso, o sistema pede para criar a senha.
-
-Variáveis de ambiente opcionais: `PORT` (padrão 3000), `DATA_DIR` (pasta do banco, padrão `./data`).
-
-Testes: `npm test`
-
-### Hospedagem
-
-Para as automações rodarem 24h, o app precisa ficar ligado num servidor (VPS, Railway, Render, Fly.io, um computador sempre ligado…). Ele **não** é compatível com hospedagens serverless (ex.: Vercel), porque usa banco em arquivo e um agendador interno.
-
-Com Docker:
-
-```bash
-docker build -t emprestimos .
-docker run -d -p 3000:3000 -v emprestimos-data:/data --name emprestimos emprestimos
-```
-
-Use HTTPS (proxy reverso como Caddy/Nginx ou o da própria plataforma) quando expor na internet, e faça backups periódicos em **Configurações → Backup**.
+Sem `DATABASE_URL`, o banco embutido é usado; sem `BLOB_READ_WRITE_TOKEN`, os arquivos ficam em `./data/uploads`.
 
 ## Estrutura
 
 ```
-server/
-  index.js       inicialização + agendador
-  app.js         API REST
-  db.js          esquema SQLite, configurações e dados iniciais
-  finance.js     cronograma de parcelas, multa e juros de mora
-  messaging.js   modelos, variáveis e provedores de WhatsApp
-  scheduler.js   regras de cobrança automática
-  auth.js        senha e sessões
-public/          interface (HTML/CSS/JS, sem build)
-test/            testes (node:test)
+server.js          entrada (Vercel / local)
+src/app.js         API (contas, clientes, empréstimos, cadastros, cobranças, webhooks, cron)
+src/db.js          Postgres / PGlite, tabelas e dados iniciais
+src/auth.js        login por e-mail e senha, sessões
+src/messaging.js   modelos, WhatsApp (Z-API, Evolution, Cloud API, URL), bot
+src/scheduler.js   regras de cobrança automática
+src/storage.js     Vercel Blob privado / disco local
+src/finance.js     parcelas, juros, multa e mora
+public/            painel (app.js) e página de cadastro do cliente (cadastro.html)
+vendor/            fonte do bundle de upload do Vercel Blob (npm run build:vendor)
 ```

@@ -32,7 +32,7 @@ const MSG_STATUS = {
   logged: ['Registrada', ''], received: ['Nova', 'info'], read: ['Recebida', ''],
 };
 const TRIGGER = { before_due: 'Antes do vencimento', on_due: 'No dia do vencimento', after_due: 'Após o vencimento (atraso)' };
-const VARS = ['cronograma', 'nome', 'primeiro_nome', 'parcela', 'valor', 'valor_atualizado', 'vencimento', 'dias_atraso', 'dias_para_vencer', 'saldo_devedor', 'valor_emprestado', 'total_emprestimo', 'qtd_parcelas', 'pix', 'empresa', 'hoje', 'valor_pago'];
+const VARS = ['cronograma', 'link', 'pendencias', 'nome', 'primeiro_nome', 'parcela', 'valor', 'valor_atualizado', 'vencimento', 'dias_atraso', 'dias_para_vencer', 'saldo_devedor', 'valor_emprestado', 'total_emprestimo', 'qtd_parcelas', 'pix', 'empresa', 'hoje', 'valor_pago'];
 
 function situationBadge(i) {
   switch (i.situation) {
@@ -47,9 +47,21 @@ const loanBadge = (s) => { const [t, c] = LOAN_STATUS[s] || [s, '']; return `<sp
 const msgBadge = (s) => { const [t, c] = MSG_STATUS[s] || [s, '']; return `<span class="badge ${c}">${t}</span>`; };
 const stars = (n) => '★'.repeat(n) + '☆'.repeat(5 - n);
 
+// Usuário logado e conta em foco (a conta central pode ver todas ou escolher uma).
+let ME = null;
+let ACCOUNTS = [];
+let SYSTEM_NAME = 'Empréstimos';
+const isAdmin = () => ME?.role === 'admin';
+const getScope = () => { try { return isAdmin() ? localStorage.getItem('scope') || '' : ''; } catch { return ''; } };
+const setScope = (v) => { try { localStorage.setItem('scope', v || ''); } catch { /* */ } };
+const showAccountCol = () => isAdmin() && !getScope();
+const accountName = (id) => ACCOUNTS.find((a) => a.id == id)?.name || '';
+
 async function api(method, url, body) {
+  const headers = body ? { 'Content-Type': 'application/json' } : {};
+  if (getScope()) headers['X-Account'] = getScope();
   const res = await fetch('/api' + url, {
-    method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin',
+    method, headers, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin',
   });
   if (res.status === 401 && !url.startsWith('/auth')) { renderAuth(); throw new Error('Sessão expirada'); }
   const data = res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text();
@@ -108,32 +120,44 @@ function openWa(link) {
 }
 
 // ---------- Layout / Rotas ----------
-const NAV = [
+const NAV_ALL = [
   ['dashboard', '📊', 'Painel'],
+  ['cadastros', '📝', 'Cadastros'],
   ['cobrancas', '🔔', 'Cobranças'],
   ['clientes', '👥', 'Clientes'],
   ['emprestimos', '💰', 'Empréstimos'],
   ['mensagens', '💬', 'Mensagens'],
-  ['automacoes', '⚙️', 'Automações'],
+  ['afiliados', '🤝', 'Afiliados', 'admin'],
+  ['automacoes', '⚙️', 'Automações', 'admin'],
   ['relatorios', '📈', 'Relatórios'],
   ['config', '🔧', 'Configurações'],
 ];
-const MOBILE_NAV = ['dashboard', 'cobrancas', 'clientes', 'emprestimos', 'mensagens', 'config'];
-let badges = { cobrancas: 0, mensagens: 0 };
+const navItems = () => NAV_ALL.filter((n) => !n[3] || isAdmin());
+const MOBILE_NAV = ['dashboard', 'cadastros', 'cobrancas', 'clientes', 'mais'];
+const MORE_KEYS = ['emprestimos', 'mensagens', 'afiliados', 'automacoes', 'relatorios', 'config', 'mais'];
+let badges = { cadastros: 0, cobrancas: 0, mensagens: 0 };
 
 function shell() {
   if ($('#main')) return;
+  const scopeSel = isAdmin() ? `<div class="scope-box"><label>Visualizando</label><select class="scope-select">
+      <option value="">🌐 Todas as contas</option>${ACCOUNTS.map((a) => `<option value="${a.id}">${a.role === 'admin' ? '⭐ ' : ''}${esc(a.name)}${a.active ? '' : ' (inativa)'}</option>`).join('')}</select></div>` : '';
   $('#app').innerHTML = `<div class="layout">
     <aside class="sidebar">
-      <div class="brand"><div class="brand-logo">R$</div><span id="brand-name">Empréstimos</span></div>
-      <nav class="nav">${NAV.map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
+      <div class="brand"><div class="brand-logo">R$</div><span id="brand-name">${esc(SYSTEM_NAME)}</span></div>
+      ${scopeSel}
+      <nav class="nav">${navItems().map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
       <div class="spacer"></div>
+      <div class="me-box"><strong>${esc(ME.name)}</strong><span class="small muted">${isAdmin() ? 'Conta central' : 'Afiliado'}</span></div>
       <a class="btn sm" href="#" id="logout">Sair</a>
     </aside>
     <main id="main"></main>
-    <nav class="mobile-nav">${NAV.filter(([k]) => MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t.split(' ')[0]}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
+    <nav class="mobile-nav">${[...navItems(), ['mais', '☰', 'Mais']].filter(([k]) => MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t.split(' ')[0]}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
   </div>`;
-  $('#logout').onclick = async (e) => { e.preventDefault(); await api('POST', '/auth/logout'); renderAuth(); };
+  for (const sel of $$('.scope-select')) {
+    sel.value = getScope();
+    sel.onchange = () => { setScope(sel.value); for (const o of $$('.scope-select')) o.value = sel.value; refreshBadges(); router(); };
+  }
+  $('#logout').onclick = async (e) => { e.preventDefault(); await logout(); };
 }
 
 function setBadges() {
@@ -145,7 +169,7 @@ function setBadges() {
 async function refreshBadges() {
   try {
     const d = await api('GET', '/dashboard');
-    badges = { cobrancas: d.overdue.length + d.upcoming.filter((u) => u.situation === 'due_today').length, mensagens: d.totals.pending_manual + d.totals.unread_inbound };
+    badges = { cadastros: d.totals.applications_review, cobrancas: d.overdue.length + d.upcoming.filter((u) => u.situation === 'due_today').length, mensagens: d.totals.pending_manual + d.totals.unread_inbound };
     setBadges();
   } catch { /* ignore */ }
 }
@@ -154,6 +178,10 @@ const routes = [
   [/^\/?$/, () => go('/dashboard')],
   [/^\/dashboard$/, pageDashboard],
   [/^\/cobrancas$/, pageCollections],
+  [/^\/cadastros$/, pageApplications],
+  [/^\/cadastros\/(\d+)$/, pageApplication],
+  [/^\/afiliados$/, pageAccounts],
+  [/^\/mais$/, pageMore],
   [/^\/clientes$/, pageClients],
   [/^\/clientes\/(\d+)$/, pageClient],
   [/^\/emprestimos$/, pageLoans],
@@ -168,11 +196,12 @@ const routes = [
 function go(path) { location.hash = '#' + path; }
 
 async function router() {
+  if (!ME) return;
   const [path, qs] = (location.hash.slice(1) || '/').split('?');
   const query = new URLSearchParams(qs || '');
   shell();
   const key = path.split('/')[1] || 'dashboard';
-  for (const a of $$('[data-nav]')) a.classList.toggle('active', a.dataset.nav === key);
+  for (const a of $$('[data-nav]')) a.classList.toggle('active', a.dataset.nav === key || (a.dataset.nav === 'mais' && MORE_KEYS.includes(key) && !!a.closest('.mobile-nav')));
   const main = $('#main');
   for (const [re, fn] of routes) {
     const m = path.match(re);
@@ -191,41 +220,63 @@ async function renderAuth() {
   const st = await (await fetch('/api/auth/status')).json();
   if (st.authenticated) { start(); return; }
   const setup = !st.configured;
+  ME = null;
   $('#app').innerHTML = `<div class="auth-wrap"><form class="card auth-card" id="auth-form">
     <div class="brand"><div class="brand-logo">R$</div>Gestão de Empréstimos</div>
-    <p class="muted small" style="text-align:center">${setup ? 'Primeiro acesso: crie a senha de acesso ao sistema.' : 'Digite sua senha para entrar.'}</p>
-    <div class="field"><label>Senha</label><input type="password" name="password" autocomplete="${setup ? 'new-password' : 'current-password'}" required minlength="${setup ? 6 : 1}" autofocus></div>
+    <p class="muted small" style="text-align:center">${setup ? 'Primeiro acesso: crie a <strong>conta central</strong> (administrador). Depois você cadastra os afiliados.' : 'Entre com seu e-mail e senha.'}</p>
+    ${setup ? '<div class="field"><label>Seu nome</label><input name="name" required autocomplete="name"></div>' : ''}
+    <div class="field"><label>E-mail</label><input type="email" name="email" required autocomplete="username" autofocus></div>
+    <div class="field"><label>Senha</label><input type="password" name="password" autocomplete="${setup ? 'new-password' : 'current-password'}" required minlength="${setup ? 6 : 1}"></div>
     ${setup ? '<div class="field"><label>Confirmar senha</label><input type="password" name="confirm" autocomplete="new-password" required></div>' : ''}
-    <button class="btn primary" style="width:100%">${setup ? 'Criar senha e entrar' : 'Entrar'}</button>
+    <button class="btn primary" style="width:100%">${setup ? 'Criar conta central e entrar' : 'Entrar'}</button>
   </form></div>`;
   $('#auth-form').onsubmit = (e) => {
     e.preventDefault();
     const f = formData(e.target);
     if (setup && f.password !== f.confirm) return toast('As senhas não conferem', 'error');
     guard(async () => {
-      await api('POST', setup ? '/auth/setup' : '/auth/login', { password: f.password });
+      await api('POST', setup ? '/auth/setup' : '/auth/login', { name: f.name, email: f.email, password: f.password });
       start();
     }, e.submitter);
   };
 }
 
 async function start() {
+  const me = await api('GET', '/me');
+  ME = me.user;
+  ACCOUNTS = me.accounts || [];
+  if (getScope() && !ACCOUNTS.some((a) => String(a.id) === getScope())) setScope('');
   $('#app').innerHTML = '';
   shell();
-  try { const s = await api('GET', '/settings'); $('#brand-name').textContent = s.business_name || 'Empréstimos'; document.title = s.business_name || document.title; } catch { /* */ }
+  SYSTEM_NAME = me.system_name || 'Empréstimos';
+  $('#brand-name').textContent = SYSTEM_NAME;
+  document.title = me.system_name || document.title;
   refreshBadges();
   router();
 }
 
+async function logout() {
+  await api('POST', '/auth/logout');
+  setScope('');
+  renderAuth();
+}
+
+async function reloadAccounts() {
+  if (!isAdmin()) return;
+  ACCOUNTS = (await api('GET', '/me')).accounts || [];
+  const box = $('.scope-select');
+  if (box) { $('#app').innerHTML = ''; shell(); refreshBadges(); }
+}
+
 window.addEventListener('hashchange', router);
-setInterval(refreshBadges, 60000);
+setInterval(() => { if (ME) refreshBadges(); }, 60000);
 renderAuth();
 
 // ---------- Componentes compartilhados ----------
 function installmentRow(i, { showClient = false } = {}) {
   const parcel = `${i.number}/${i.installments_count ?? ''}`.replace(/\/$/, '');
   return `<tr>
-    ${showClient ? `<td><a href="#/clientes/${i.client_id}">${esc(i.client_name)}</a><div class="small muted">${esc(i.client_phone || '')}</div></td>` : ''}
+    ${showClient ? `<td><a href="#/clientes/${i.client_id}">${esc(i.client_name)}</a><div class="small muted">${esc(i.client_phone || '')}${showAccountCol() && i.account_name ? ` · ${esc(i.account_name)}` : ''}</div></td>` : ''}
     <td class="nowrap"><a href="#/emprestimos/${i.loan_id}">#${i.loan_id}</a> · ${parcel}</td>
     <td class="nowrap">${dateBR(i.due_date)}</td>
     <td class="num right">${brl(i.amount_cents)}</td>
@@ -346,7 +397,7 @@ async function pageDashboard(main) {
   const max = Math.max(1, ...d.months.flatMap((m) => [m.received, m.lent]));
   const monthName = (s) => new Date(s + '-15').toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
   main.innerHTML = `
-    <div class="page-head"><div><h1>Painel</h1><div class="muted small">Hoje, ${dateBR(d.today)}</div></div>
+    <div class="page-head"><div><h1>Painel${getScope() ? ` — ${esc(accountName(getScope()))}` : isAdmin() ? ' — todas as contas' : ''}</h1><div class="muted small">Hoje, ${dateBR(d.today)}</div></div>
       <div class="actions"><a class="btn primary" href="#/emprestimos/novo">+ Novo cliente / empréstimo</a></div></div>
     <div id="wa-status"></div>
     <div class="kpis">
@@ -357,8 +408,9 @@ async function pageDashboard(main) {
       <div class="kpi"><div class="label">Lucro realizado</div><div class="value">${brl(t.profit_realized)}</div><div class="sub">juros + encargos recebidos</div></div>
       <div class="kpi"><div class="label">Lucro projetado</div><div class="value">${brl(t.expected_profit)}</div><div class="sub">se tudo for pago</div></div>
     </div>
-    ${t.pending_manual || t.unread_inbound || t.failed_messages ? `<div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    ${t.pending_manual || t.unread_inbound || t.failed_messages || t.applications_review ? `<div class="card" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <strong>Atenção:</strong>
+      ${t.applications_review ? `<a class="badge primary" href="#/cadastros">${t.applications_review} cadastro(s) aguardando análise</a>` : ''}
       ${t.pending_manual ? `<a class="badge warn" href="#/mensagens?status=pending_manual">${t.pending_manual} mensagem(ns) aguardando envio manual</a>` : ''}
       ${t.unread_inbound ? `<a class="badge info" href="#/mensagens?status=received">${t.unread_inbound} resposta(s) de clientes</a>` : ''}
       ${t.failed_messages ? `<a class="badge danger" href="#/mensagens?status=failed">${t.failed_messages} falha(s) de envio</a>` : ''}
@@ -366,12 +418,12 @@ async function pageDashboard(main) {
     <div class="grid cols-2">
       <div class="card"><div class="page-head" style="margin-bottom:6px"><h2 style="margin:0">Atrasados</h2><a href="#/cobrancas" class="small">ver todos</a></div>
         ${d.overdue.length ? d.overdue.slice(0, 8).map((i) => `<div class="list-item"><div class="main"><strong><a href="#/clientes/${i.client_id}">${esc(i.client_name)}</a></strong>
-          <span class="small muted">Parcela ${i.number}/${i.installments_count} · venceu ${dateBR(i.due_date)}</span></div>
+          <span class="small muted">Parcela ${i.number}/${i.installments_count} · venceu ${dateBR(i.due_date)}${showAccountCol() ? ` · ${esc(i.account_name || '')}` : ''}</span></div>
           <div class="right"><div class="num"><strong>${brl(i.remaining_cents)}</strong></div>${situationBadge(i)}</div></div>`).join('') : '<div class="empty">Nenhuma parcela em atraso 🎉</div>'}
       </div>
       <div class="card"><div class="page-head" style="margin-bottom:6px"><h2 style="margin:0">Próximos 7 dias</h2><a href="#/cobrancas" class="small">agenda</a></div>
         ${d.upcoming.length ? d.upcoming.slice(0, 8).map((i) => `<div class="list-item"><div class="main"><strong><a href="#/clientes/${i.client_id}">${esc(i.client_name)}</a></strong>
-          <span class="small muted">Parcela ${i.number}/${i.installments_count} · ${dateBR(i.due_date)}</span></div>
+          <span class="small muted">Parcela ${i.number}/${i.installments_count} · ${dateBR(i.due_date)}${showAccountCol() ? ` · ${esc(i.account_name || '')}` : ''}</span></div>
           <div class="right"><div class="num"><strong>${brl(i.remaining_cents)}</strong></div>${situationBadge(i)}</div></div>`).join('') : '<div class="empty">Nenhum vencimento na próxima semana</div>'}
       </div>
     </div>
@@ -381,19 +433,19 @@ async function pageDashboard(main) {
         <div class="bar-pair"><div class="bar" style="height:${(m.received / max) * 100}%"></div><div class="bar alt" style="height:${(m.lent / max) * 100}%"></div></div>
         <div class="small muted">${monthName(m.month)}</div></div>`).join('')}</div>
     </div>`;
-  renderWaStatus($('#wa-status'));
+  if (!isAdmin() || getScope()) renderWaStatus($('#wa-status'));
 }
 
 async function renderWaStatus(el) {
   if (!el) return;
   try {
-    const st = await api('GET', '/whatsapp/status');
+    const st = await api('GET', `/whatsapp/status${getScope() ? `?account=${getScope()}` : ''}`);
     if (st.provider === 'manual') {
       el.innerHTML = `<div class="card wa-banner warn"><div><strong>WhatsApp não conectado.</strong> As cobranças estão sendo geradas, mas você precisa tocar em enviar em cada uma.
-        <div class="small muted">Conecte seu número para as cobranças saírem sozinhas.</div></div><a class="btn wa" href="#/config">Conectar WhatsApp</a></div>`;
+        <div class="small muted">Conecte seu número para as cobranças saírem sozinhas.</div></div><a class="btn wa" href="#/config${getScope() ? `?conta=${getScope()}` : ''}">Conectar WhatsApp</a></div>`;
     } else if (!st.connected) {
       el.innerHTML = `<div class="card wa-banner danger"><div><strong>WhatsApp desconectado.</strong> As cobranças automáticas vão falhar até reconectar.
-        <div class="small muted">${esc(st.error || st.detail || '')}</div></div><a class="btn wa" href="#/config">Reconectar</a></div>`;
+        <div class="small muted">${esc(st.error || st.detail || '')}</div></div><a class="btn wa" href="#/config${getScope() ? `?conta=${getScope()}` : ''}">Reconectar</a></div>`;
     } else el.innerHTML = '';
   } catch { el.innerHTML = ''; }
 }
@@ -405,7 +457,7 @@ async function pageCollections(main, query) {
   const all = [...d.overdue, ...d.due_today, ...d.upcoming];
   const section = (title, items, empty) => `<div class="card"><h2>${title} <span class="badge">${items.length}</span>
     <span class="muted small" style="font-weight:400;margin-left:6px">${brl(items.reduce((s, i) => s + i.remaining_cents, 0))}</span></h2>
-    ${items.length ? `<div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Empréstimo</th><th>Vencimento</th><th class="right">Parcela</th><th class="right">Devido</th><th>Situação</th><th></th></tr></thead>
+    ${items.length ? `<div class="table-wrap"><table><thead><tr><th>Cliente${showAccountCol() ? ' / conta' : ''}</th><th>Empréstimo</th><th>Vencimento</th><th class="right">Parcela</th><th class="right">Devido</th><th>Situação</th><th></th></tr></thead>
     <tbody>${items.map((i) => installmentRow(i, { showClient: true })).join('')}</tbody></table></div>` : `<div class="empty">${empty}</div>`}</div>`;
   main.innerHTML = `<div class="page-head"><div><h1>Cobranças</h1><div class="muted small">Agenda de recebimentos e atrasos</div></div>
     <div class="actions"><select id="days" class="btn">${[7, 15, 30, 60].map((n) => `<option value="${n}" ${n === days ? 'selected' : ''}>Próximos ${n} dias</option>`).join('')}</select>
@@ -449,8 +501,8 @@ async function pageClients(main, query) {
     <div class="actions"><button class="btn primary" id="new-client">+ Novo cliente</button></div></div>
     <div class="toolbar"><input id="q" placeholder="Buscar por nome, telefone, CPF ou tag" value="${esc(q)}">
       <label class="check" style="margin:0"><input type="checkbox" id="arch" ${archived ? 'checked' : ''}> Arquivados</label></div>
-    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>Nome</th><th>Telefone</th><th>Score</th><th class="right">Saldo devedor</th><th class="right">Em atraso</th></tr></thead><tbody>
-      ${list.map((c) => `<tr class="click" data-id="${c.id}"><td><strong>${esc(c.name)}</strong>${c.tags ? `<div class="small muted">${esc(c.tags)}</div>` : ''}</td>
+    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>Nome</th>${showAccountCol() ? '<th>Conta</th>' : ''}<th>Telefone</th><th>Score</th><th class="right">Saldo devedor</th><th class="right">Em atraso</th></tr></thead><tbody>
+      ${list.map((c) => `<tr class="click" data-id="${c.id}"><td><strong>${esc(c.name)}</strong>${c.tags ? `<div class="small muted">${esc(c.tags)}</div>` : ''}</td>${showAccountCol() ? `<td class="small">${esc(c.account_name || '')}</td>` : ''}
       <td class="nowrap">${esc(c.phone || '—')}</td><td class="stars">${stars(c.score)}</td>
       <td class="num right">${brl(c.balance_cents)}</td>
       <td class="num right">${c.overdue_cents ? `<span class="badge danger">${brl(c.overdue_cents)} · ${c.max_days_late}d</span>` : '<span class="muted">—</span>'}</td></tr>`).join('')}
@@ -463,6 +515,11 @@ async function pageClients(main, query) {
   setTimeout(() => { const el = $('#q'); if (q && el) { el.focus(); el.setSelectionRange(q.length, q.length); } });
 }
 
+function accountSelect(name, selected) {
+  if (!isAdmin()) return '';
+  return `<div class="field"><label>Conta responsável</label><select name="${name}">${ACCOUNTS.filter((a) => a.active).map((a) => `<option value="${a.id}" ${String(a.id) === String(selected || getScope() || ME.id) ? 'selected' : ''}>${a.role === 'admin' ? '⭐ ' : ''}${esc(a.name)}</option>`).join('')}</select></div>`;
+}
+
 function clientDialog(c, onSaved) {
   c = c || { score: 3, whatsapp_opt_in: 1 };
   modal(c.id ? 'Editar cliente' : 'Novo cliente', `<form class="form-grid">
@@ -471,6 +528,9 @@ function clientDialog(c, onSaved) {
     <div class="field"><label>CPF / Documento</label><input name="document" value="${esc(c.document)}"></div>
     <div class="field"><label>E-mail</label><input type="email" name="email" value="${esc(c.email)}"></div>
     <div class="field"><label>Score (confiança)</label><select name="score">${[5, 4, 3, 2, 1].map((n) => `<option value="${n}" ${n == c.score ? 'selected' : ''}>${stars(n)}</option>`).join('')}</select></div>
+    <div class="field"><label>Data de nascimento</label><input type="date" name="birth_date" value="${esc(c.birth_date)}"></div>
+    <div class="field"><label>Profissão</label><input name="occupation" value="${esc(c.occupation)}"></div>
+    ${accountSelect('owner_id', c.owner_id)}
     <div class="field full"><label>Endereço</label><input name="address" value="${esc(c.address)}"></div>
     <div class="field full"><label>Tags</label><input name="tags" placeholder="ex.: indicação, comércio" value="${esc(c.tags)}"></div>
     <div class="field full"><label>Observações</label><textarea name="notes">${esc(c.notes)}</textarea></div>
@@ -496,7 +556,7 @@ async function pageClient(main, id) {
   const overdue = c.loans.reduce((s, l) => s + (l.status === 'active' ? l.overdue_cents : 0), 0);
   const reload = () => pageClient(main, id);
   main.innerHTML = `<div class="page-head"><div><a href="#/clientes" class="small">← Clientes</a><h1>${esc(c.name)} ${c.archived ? '<span class="badge">Arquivado</span>' : ''}</h1>
-    <div class="muted small">${esc(c.phone || 'sem telefone')} ${c.document ? '· ' + esc(c.document) : ''} · <span class="stars">${stars(c.score)}</span></div></div>
+    <div class="muted small">${esc(c.phone || 'sem telefone')} ${c.document ? '· CPF ' + esc(c.document) : ''} · <span class="stars">${stars(c.score)}</span>${isAdmin() ? ` · Conta: <strong>${esc(c.account_name || '')}</strong>` : ''}</div></div>
     <div class="actions">
       ${c.wa_link ? `<a class="btn wa" href="${esc(c.wa_link)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
       <button class="btn" id="send-msg">Enviar mensagem</button>
@@ -516,6 +576,9 @@ async function pageClient(main, id) {
           <div class="progress" style="margin-top:6px"><div style="width:${(l.paid_count / l.installments_count) * 100}%"></div></div></div>
           <div class="right"><div class="num"><strong>${brl(l.balance_cents)}</strong></div>${l.overdue_count ? `<span class="badge danger">${l.overdue_count} atrasada(s)</span>` : ''}</div></div>`).join('') : '<div class="empty">Nenhum empréstimo</div>'}</div>
         <div class="card"><h2>Dados</h2>
+          <div class="summary-row"><span class="muted">Nascimento</span><span>${dateBR(c.birth_date)}</span></div>
+          <div class="summary-row"><span class="muted">Profissão</span><span>${esc(c.occupation || '—')}</span></div>
+          <div class="summary-row"><span class="muted">Renda</span><span>${c.income_cents ? brl(c.income_cents) : '—'}</span></div>
           <div class="summary-row"><span class="muted">E-mail</span><span>${esc(c.email || '—')}</span></div>
           <div class="summary-row"><span class="muted">Endereço</span><span>${esc(c.address || '—')}</span></div>
           <div class="summary-row"><span class="muted">Tags</span><span>${esc(c.tags || '—')}</span></div>
@@ -524,6 +587,8 @@ async function pageClient(main, id) {
           <div class="btn-row" style="margin-top:12px"><button class="btn sm" id="archive">${c.archived ? 'Desarquivar' : 'Arquivar'}</button>
           ${c.loans.length ? '' : '<button class="btn sm danger" id="del">Excluir</button>'}</div>
         </div>
+        ${c.files?.length ? `<div class="card"><h2>Documentos do cadastro</h2><div class="file-grid">${c.files.map(fileThumb).join('')}</div>
+          ${c.application_id ? `<a class="small" href="#/cadastros/${c.application_id}">ver análise do cadastro</a>` : ''}</div>` : ''}
         ${c.payments.length ? `<div class="card"><h2>Pagamentos</h2>${c.payments.slice(0, 15).map((p) => `<div class="list-item"><div class="main"><strong class="num">${brl(p.amount_cents)}</strong>
           <span class="small muted">${dateBR(p.paid_at)} · empréstimo #${p.loan_id} parcela ${p.number} · ${esc(p.method || '')}</span></div></div>`).join('')}</div>` : ''}
       </div>
@@ -533,6 +598,7 @@ async function pageClient(main, id) {
       </div>
     </div>`;
   $('#edit').onclick = () => clientDialog(c, reload);
+  bindFileViewer(main);
   $('#send-msg').onclick = async () => messageDialog({ clientId: c.id, templates: await api('GET', '/templates'), onDone: reload });
   $('#archive').onclick = () => guard(async () => { await api('PUT', `/clients/${c.id}`, { archived: !c.archived }); reload(); });
   if ($('#del')) $('#del').onclick = async () => { if (await confirmDialog('Excluir este cliente definitivamente?', 'Excluir')) guard(async () => { await api('DELETE', `/clients/${c.id}`); go('/clientes'); }); };
@@ -552,7 +618,7 @@ function msgBubble(m) {
 
 function bindMessageActions(root, reload) {
   for (const b of $$('[data-manual]', root)) b.onclick = () => guard(async () => {
-    const list = await api('GET', `/messages?limit=1000`);
+    const list = await api('GET', '/messages?limit=1000');
     const m = list.find((x) => x.id == b.dataset.manual);
     if (m?.wa_link) openWa(m.wa_link);
     await api('POST', `/messages/${b.dataset.manual}/mark-sent`);
@@ -572,8 +638,8 @@ async function pageLoans(main, query) {
   main.innerHTML = `<div class="page-head"><div><h1>Empréstimos</h1><div class="muted small">${list.length} registro(s) · saldo ${brl(list.reduce((s, l) => s + l.balance_cents, 0))}</div></div>
     <div class="actions"><a class="btn primary" href="#/emprestimos/novo">+ Novo empréstimo</a></div></div>
     <div class="tabs">${[['active', 'Ativos'], ['paid', 'Quitados'], ['canceled', 'Cancelados'], ['all', 'Todos']].map(([k, t]) => `<button data-st="${k}" class="${k === status ? 'active' : ''}">${t}</button>`).join('')}</div>
-    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>Cliente</th><th>Data</th><th class="right">Emprestado</th><th>Condições</th><th>Progresso</th><th class="right">Saldo</th><th>Status</th></tr></thead><tbody>
-    ${list.map((l) => `<tr class="click" data-id="${l.id}"><td>${l.id}</td><td><strong>${esc(l.client_name)}</strong></td><td class="nowrap">${dateBR(l.start_date)}</td>
+    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>Cliente</th>${showAccountCol() ? '<th>Conta</th>' : ''}<th>Data</th><th class="right">Emprestado</th><th>Condições</th><th>Progresso</th><th class="right">Saldo</th><th>Status</th></tr></thead><tbody>
+    ${list.map((l) => `<tr class="click" data-id="${l.id}"><td>${l.id}</td><td><strong>${esc(l.client_name)}</strong></td>${showAccountCol() ? `<td class="small">${esc(l.account_name || '')}</td>` : ''}<td class="nowrap">${dateBR(l.start_date)}</td>
       <td class="num right">${brl(l.principal_cents)}</td><td class="small">${l.installments_count}x ${FREQ[l.frequency].toLowerCase()} · ${String(l.interest_rate).replace('.', ',')}%</td>
       <td style="min-width:110px"><div class="small muted">${l.paid_count}/${l.installments_count}</div><div class="progress"><div style="width:${(l.paid_count / l.installments_count) * 100}%"></div></div></td>
       <td class="num right"><strong>${brl(l.balance_cents)}</strong></td>
@@ -586,10 +652,11 @@ async function pageLoans(main, query) {
 async function pageNewLoan(main, query) {
   const [clients, settings] = await Promise.all([api('GET', '/clients'), api('GET', '/settings')]);
   const pre = query?.get?.('cliente');
+  const preValue = query?.get?.('valor');
   const today = todayISO();
   let mode = pre || query?.get?.('existente') ? 'existing' : 'new';
   main.innerHTML = `<div class="page-head"><div><a href="#/emprestimos" class="small">← Empréstimos</a><h1>Novo cliente / empréstimo</h1>
-    <div class="muted small">Cadastre aqui o cliente já aprovado no WhatsApp. A partir daqui o app cuida das cobranças.</div></div></div>
+    <div class="muted small">Para clientes que não passaram pelo link de cadastro. Clientes aprovados em <a href="#/cadastros">Cadastros</a> já aparecem em "Cliente já cadastrado".</div></div></div>
     <div class="grid cols-2">
       <form class="card" id="loan-form">
         <div class="tabs" style="margin-top:-6px"><button type="button" data-mode="new">Cliente novo</button><button type="button" data-mode="existing">Cliente já cadastrado</button></div>
@@ -599,17 +666,18 @@ async function pageNewLoan(main, query) {
           <div class="field"><label>CPF</label><input name="nc_document"></div>
           <div class="field full"><label>Endereço</label><input name="nc_address"></div>
           <div class="field full"><label>Observações sobre o cliente</label><input name="nc_notes" placeholder="ex.: indicado por…, trabalha em…"></div>
+          ${accountSelect('owner_id')}
         </div>
         <div class="form-grid" data-section="existing">
           <div class="field full"><label>Cliente *</label><select name="client_id"><option value="">Selecione…</option>
-          ${clients.map((c) => `<option value="${c.id}" ${c.id == pre ? 'selected' : ''}>${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}</option>`).join('')}</select></div>
+          ${clients.map((c) => `<option value="${c.id}" ${c.id == pre ? 'selected' : ''}>${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}${showAccountCol() ? ' — ' + esc(c.account_name || '') : ''}</option>`).join('')}</select></div>
         </div>
         <h3 style="margin:8px 0 10px">Empréstimo</h3>
         <div class="form-grid">
-        <div class="field"><label>Valor emprestado (R$) *</label><input name="principal" inputmode="decimal" placeholder="1.000,00" required></div>
+        <div class="field"><label>Valor emprestado (R$) *</label><input name="principal" inputmode="decimal" placeholder="1.000,00" value="${preValue ? centsToInput(preValue) : ''}" required></div>
         <div class="field"><label>Data do empréstimo</label><input type="date" name="start_date" value="${today}"></div>
         <div class="field"><label>Frequência das parcelas</label><select name="frequency">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
-        <div class="field"><label>Nº de parcelas</label><input type="number" name="installments_count" min="1" max="600" value="1"></div>
+        <div class="field"><label>Nº de parcelas</label><input type="number" name="installments_count" min="1" max="600" value="${Number(query?.get?.('parcelas')) || 1}"></div>
         <div class="field"><label>Juros (% <span id="unit">ao mês</span>)</label><input name="interest_rate" inputmode="decimal" value="10"></div>
         <div class="field"><label>Cálculo</label><select name="method">${Object.entries(METHOD).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
         <div class="field"><label>1º vencimento</label><input type="date" name="first_due_date"><div class="hint">Em branco = um período após a data do empréstimo</div></div>
@@ -658,11 +726,13 @@ async function pageNewLoan(main, query) {
   };
   for (const b of $$('[data-mode]', form)) b.onclick = () => setMode(b.dataset.mode);
   setMode(mode);
+  if (preValue) simulate();
   form.onsubmit = (e) => {
     e.preventDefault();
     guard(async () => {
       const p = payload();
       for (const k of Object.keys(p)) if (k.startsWith('nc_')) delete p[k];
+      if (mode !== 'new') delete p.owner_id;
       if (mode === 'new') {
         const f = formData(form);
         p.new_client = { name: f.nc_name, phone: f.nc_phone, document: f.nc_document, address: f.nc_address, notes: f.nc_notes };
@@ -688,7 +758,7 @@ async function pageLoan(main, id) {
   const items = l.installments.map((i) => ({ ...i, installments_count: l.installments_count, client_id: l.client_id, client_name: l.client.name, client_phone: l.client.phone }));
   main.innerHTML = `<div class="page-head"><div><a href="#/clientes/${l.client_id}" class="small">← ${esc(l.client.name)}</a>
     <h1>Empréstimo #${l.id} ${loanBadge(l.status)}</h1>
-    <div class="muted small">${dateBR(l.start_date)} · ${METHOD[l.method]} · ${String(l.interest_rate).replace('.', ',')}% ${FREQ_UNIT[l.frequency]} · ${l.installments_count}x ${FREQ[l.frequency].toLowerCase()}</div></div>
+    <div class="muted small">${dateBR(l.start_date)} · ${METHOD[l.method]} · ${String(l.interest_rate).replace('.', ',')}% ${FREQ_UNIT[l.frequency]} · ${l.installments_count}x ${FREQ[l.frequency].toLowerCase()}${isAdmin() ? ` · Conta: ${esc(l.account_name || '')}` : ''}</div></div>
     <div class="actions"><button class="btn" id="edit-loan">Encargos/observações</button>
     ${l.status === 'active' ? '<button class="btn danger" id="cancel-loan">Cancelar</button>' : ''}
     <button class="btn danger" id="del-loan">Excluir</button></div></div>
@@ -764,7 +834,8 @@ async function pageMessages(main, query) {
     <button class="btn" id="run-auto">▶ Executar automações</button></div></div>
     <div class="tabs">${tabs.map(([k, t]) => `<button data-st="${k}" class="${k === status ? 'active' : ''}">${t}</button>`).join('')}</div>
     <div class="card">${list.length ? list.map((m) => `<div class="list-item" style="align-items:flex-start"><div class="main" style="flex:1">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><strong>${m.client_id ? `<a href="#/clientes/${m.client_id}">${esc(m.client_name)}</a>` : 'Desconhecido'}</strong>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><strong>${m.client_id ? `<a href="#/clientes/${m.client_id}">${esc(m.person_name)}</a>` : m.application_id ? `<a href="#/cadastros/${m.application_id}">${esc(m.person_name || m.person_phone || 'Novo contato')}</a> <span class="badge info">cadastro</span>` : esc(m.person_phone || 'Desconhecido')}</strong>
+        ${showAccountCol() ? `<span class="small muted">${esc(m.account_name || '')}</span>` : ''}
         <span class="small muted">${m.direction === 'in' ? '📥 recebida' : m.direction === 'note' ? '📝 anotação' : m.channel === 'whatsapp' ? '📤 WhatsApp' : '📤 CRM'} · ${dateTimeBR(m.created_at)}</span>
         ${m.direction !== 'note' ? msgBadge(m.status) : ''}</div>
         <div class="pre small" style="margin-top:4px">${esc(m.body)}</div>${m.error ? `<div class="small" style="color:var(--danger)">${esc(m.error)}</div>` : ''}</div>
@@ -784,12 +855,13 @@ async function pageMessages(main, query) {
 
 // ---------- Automações ----------
 async function pageAutomations(main) {
+  if (!isAdmin()) { main.innerHTML = '<div class="card empty">Somente a conta central edita as automações.</div>'; return; }
   const [rules, templates, settings] = await Promise.all([api('GET', '/rules'), api('GET', '/templates'), api('GET', '/settings')]);
   const reload = () => pageAutomations(main);
   const ruleDesc = (r) => r.trigger === 'before_due' ? `${r.days} dia(s) antes` : r.trigger === 'on_due' ? 'no dia' : `${r.days} dia(s) após${r.repeat_every ? `, repete a cada ${r.repeat_every} dia(s)${r.max_repeats ? ` (até ${r.max_repeats}x)` : ''}` : ''}`;
   main.innerHTML = `<div class="page-head"><div><h1>Automações</h1><div class="muted small">
-    ${settings.scheduler_enabled === '1' ? `✅ Ativas — verificação a cada ${settings.scheduler_interval_minutes} min, entre ${settings.send_window_start} e ${settings.send_window_end}` : '⏸ Automações pausadas (ative em Configurações)'}
-    · WhatsApp: <strong>${{ manual: 'envio manual (wa.me)', cloud: 'WhatsApp Cloud API', evolution: 'Evolution API', zapi: 'Z-API', webhook: 'Webhook' }[settings.wa_provider]}</strong></div></div>
+    ${settings.automations_enabled === '1' ? '✅ Ativas — as cobranças são enviadas automaticamente uma vez por dia (pela manhã), para todas as contas.' : '⏸ Automações pausadas (ative em Configurações)'}
+    As regras valem para a central e todos os afiliados; cada um envia pelo seu próprio WhatsApp.</div></div>
     <div class="actions"><button class="btn" id="run-auto">▶ Executar agora</button></div></div>
     <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Regras de cobrança</h2><button class="btn sm primary" id="new-rule">+ Regra</button></div>
       ${rules.length ? `<div class="table-wrap"><table><thead><tr><th>Regra</th><th>Quando</th><th>Modelo</th><th>Canal</th><th>Status</th><th></th></tr></thead><tbody>
@@ -873,11 +945,12 @@ async function pageReports(main, query) {
       <div class="card"><h2>Pagamentos recebidos</h2>${r.payments.length ? `<div class="table-wrap"><table><thead><tr><th>Data</th><th>Cliente</th><th>Parc.</th><th>Forma</th><th class="right">Valor</th></tr></thead><tbody>
         ${r.payments.map((p) => `<tr><td>${dateBR(p.paid_at)}</td><td>${esc(p.client_name)}</td><td>${p.number}</td><td>${esc(p.method || '')}</td><td class="num right">${brl(p.amount_cents)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nenhum pagamento no período</div>'}</div>
       <div>
+        ${showAccountCol() && Object.keys(r.by_account || {}).length ? `<div class="card"><h2>Recebido por conta</h2>${Object.entries(r.by_account).map(([k, v]) => `<div class="summary-row"><span>${esc(k)}</span><strong class="num">${brl(v)}</strong></div>`).join('')}</div>` : ''}
         <div class="card"><h2>Por forma de pagamento</h2>${Object.entries(r.by_method).map(([k, v]) => `<div class="summary-row"><span>${esc(k)}</span><strong class="num">${brl(v)}</strong></div>`).join('') || '<div class="empty">—</div>'}</div>
         <div class="card"><h2>Novos empréstimos</h2>${r.loans.length ? r.loans.map((l) => `<div class="summary-row"><span><a href="#/emprestimos/${l.id}">#${l.id}</a> ${esc(l.client_name)} · ${dateBR(l.start_date)}</span><strong class="num">${brl(l.principal_cents)}</strong></div>`).join('') : '<div class="empty">Nenhum</div>'}</div>
         <div class="card"><h2>Exportar planilhas (CSV)</h2><div class="btn-row">
-          <a class="btn sm" href="/api/export/emprestimos.csv">Empréstimos</a><a class="btn sm" href="/api/export/parcelas.csv">Parcelas</a>
-          <a class="btn sm" href="/api/export/pagamentos.csv">Pagamentos</a><a class="btn sm" href="/api/export/clientes.csv">Clientes</a></div>
+          <a class="btn sm" href="/api/export/emprestimos.csv${getScope() ? `?account=${getScope()}` : ''}">Empréstimos</a><a class="btn sm" href="/api/export/parcelas.csv${getScope() ? `?account=${getScope()}` : ''}">Parcelas</a>
+          <a class="btn sm" href="/api/export/pagamentos.csv${getScope() ? `?account=${getScope()}` : ''}">Pagamentos</a><a class="btn sm" href="/api/export/clientes.csv${getScope() ? `?account=${getScope()}` : ''}">Clientes</a></div>
           <div class="hint">Abre direto no Excel / Google Planilhas (separador “;”).</div></div>
       </div>
     </div>`;
@@ -891,88 +964,335 @@ async function pageReports(main, query) {
   };
 }
 
+// ---------- Documentos (visualização) ----------
+const APP_STATUS = {
+  pending: ['Aguardando cliente', 'warn'], needs_changes: ['Correção solicitada', 'warn'], submitted: ['Para analisar', 'info'],
+  approved: ['Aprovado', 'ok'], rejected: ['Recusado', 'danger'],
+};
+const appBadge = (s) => { const [t, c] = APP_STATUS[s] || [s, '']; return `<span class="badge ${c}">${t}</span>`; };
+const FILE_STATUS = { pending: ['Aguardando análise', 'info'], approved: ['Aprovado', 'ok'], rejected: ['Recusado', 'danger'] };
+const fileBadge = (s) => { const [t, c] = FILE_STATUS[s] || [s, '']; return `<span class="badge ${c}">${t}</span>`; };
+const fileUrl = (f) => `/api/files/${f.id}${getScope() ? `?account=${getScope()}` : ''}`;
+const isImg = (f) => /^image\/(jpeg|png|webp|gif)/.test(f.content_type || '');
+const isVid = (f) => /^video\//.test(f.content_type || '');
+
+function fileThumb(f) {
+  const icon = isVid(f) ? '🎥' : f.content_type === 'application/pdf' ? '📄' : '🖼️';
+  return `<button type="button" class="file-thumb" data-view="${f.id}" data-type="${esc(f.content_type || '')}" data-label="${esc(f.label)}">
+    ${isImg(f) ? `<img src="${fileUrl(f)}" alt="${esc(f.label)}" loading="lazy">` : `<span class="file-icon">${icon}</span>`}
+    <span class="small">${esc(f.label)}</span>${f.status ? fileBadge(f.status) : ''}</button>`;
+}
+
+function bindFileViewer(root) {
+  for (const b of $$('[data-view]', root)) b.onclick = () => {
+    const f = { id: b.dataset.view, content_type: b.dataset.type, label: b.dataset.label };
+    const url = fileUrl(f);
+    const body = isImg(f) ? `<img src="${url}" style="max-width:100%;border-radius:10px" alt="">`
+      : isVid(f) ? `<video src="${url}" controls playsinline style="width:100%;border-radius:10px;background:#000"></video>`
+        : f.content_type === 'application/pdf' ? `<iframe src="${url}" style="width:100%;height:70vh;border:0;border-radius:10px" title="PDF"></iframe>`
+          : '<div class="empty">Pré-visualização indisponível para este formato.</div>';
+    modal(f.label, `${body}<div class="modal-foot"><a class="btn" href="${url}${url.includes('?') ? '&' : '?'}download=1">⬇ Baixar</a><a class="btn" href="${url}" target="_blank" rel="noopener">Abrir em nova aba</a></div>`, { wide: true });
+  };
+}
+
+// ---------- Cadastros ----------
+async function pageApplications(main, query) {
+  const tab = query?.get?.('aba') || 'submitted';
+  const TABS = [['submitted', 'Para analisar'], ['open', 'Aguardando cliente'], ['approved', 'Aprovados'], ['rejected', 'Recusados']];
+  const fetchStatus = async (st) => (st === 'open'
+    ? [...await api('GET', '/applications?status=pending'), ...await api('GET', '/applications?status=needs_changes')]
+    : api('GET', `/applications?status=${st}`));
+  const list = await fetchStatus(tab);
+  const acc = !isAdmin() || getScope() ? await api('GET', `/account-settings${getScope() ? `?account=${getScope()}` : ''}`).catch(() => null) : null;
+  const reload = () => pageApplications(main, query);
+  main.innerHTML = `<div class="page-head"><div><h1>Cadastros</h1><div class="muted small">Quem chama no WhatsApp recebe o link, envia dados e documentos, e você aprova ou recusa aqui.</div></div>
+    <div class="actions"><button class="btn primary" id="new-link">+ Enviar link de cadastro</button></div></div>
+    ${acc ? `<div class="card" style="margin-bottom:16px"><div class="small"><strong>Link de cadastro da conta${isAdmin() ? ` ${esc(acc.account.name)}` : ''}</strong> — divulgue em status, grupos ou anúncios:</div>
+      <div style="display:flex;gap:8px;margin-top:6px"><input readonly value="${esc(acc.signup_url)}" id="signup-url"><button class="btn" id="copy-signup">Copiar</button></div></div>` : ''}
+    <div class="tabs">${TABS.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? 'active' : ''}">${t}</button>`).join('')}</div>
+    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>Nome</th>${showAccountCol() ? '<th>Conta</th>' : ''}<th>WhatsApp</th><th class="right">Valor pedido</th><th>Documentos</th><th>Situação</th><th>Data</th></tr></thead><tbody>
+      ${list.map((a) => `<tr class="click" data-id="${a.id}"><td><strong>${esc(a.name || 'Sem nome')}</strong><div class="small muted">${a.source === 'whatsapp' ? 'via WhatsApp' : a.source === 'link' ? 'via link' : 'manual'}</div></td>
+        ${showAccountCol() ? `<td class="small">${esc(a.account_name || '')}</td>` : ''}
+        <td class="nowrap">${esc(a.phone || '—')}</td><td class="num right">${a.requested_cents ? brl(a.requested_cents) : '—'}</td>
+        <td class="small">${a.files_total} arquivo(s)${a.files_approved ? ` · <span style="color:var(--ok)">${a.files_approved} ok</span>` : ''}${a.files_rejected ? ` · <span style="color:var(--danger)">${a.files_rejected} recusado(s)</span>` : ''}</td>
+        <td>${appBadge(a.status)}</td><td class="small nowrap">${dateTimeBR(a.submitted_at || a.created_at)}</td></tr>`).join('')}
+    </tbody></table></div>` : `<div class="empty">${tab === 'submitted' ? 'Nenhum cadastro aguardando análise' : 'Nada por aqui'}</div>`}</div>`;
+  for (const b of $$('[data-tab]', main)) b.onclick = () => go(`/cadastros?aba=${b.dataset.tab}`);
+  for (const tr of $$('tr[data-id]', main)) tr.onclick = () => go(`/cadastros/${tr.dataset.id}`);
+  if ($('#copy-signup')) $('#copy-signup').onclick = () => { navigator.clipboard?.writeText($('#signup-url').value); toast('Link copiado'); };
+  $('#new-link').onclick = () => modal('Enviar link de cadastro', `<form><div class="form-grid">
+      <div class="field"><label>Nome (opcional)</label><input name="name"></div>
+      <div class="field"><label>WhatsApp com DDD *</label><input name="phone" required inputmode="tel" placeholder="(11) 99999-9999"></div>
+      ${accountSelect('owner_id')}
+      <div class="field full"><label class="check"><input type="checkbox" name="send" checked> Enviar o link pelo WhatsApp agora</label></div></div>
+      <div class="modal-foot"><button type="button" class="btn" data-cancel>Cancelar</button><button class="btn primary">Gerar link</button></div></form>`, {
+    onMount: (m, close) => {
+      m.querySelector('[data-cancel]').onclick = close;
+      m.querySelector('form').onsubmit = (e) => { e.preventDefault(); guard(async () => {
+        const r = await api('POST', '/applications', formData(e.target));
+        close();
+        if (r.message?.status === 'pending_manual' && r.message.wa_link) { openWa(r.message.wa_link); await api('POST', `/messages/${r.message.id}/mark-sent`); }
+        else if (r.message?.status === 'sent') toast('Link enviado no WhatsApp');
+        else if (r.message?.status === 'failed') toast('Não enviado: ' + r.message.error, 'error');
+        modal('Link de cadastro', `<p class="small">Link pessoal deste cadastro:</p><div style="display:flex;gap:8px"><input readonly value="${esc(r.link)}" id="one-link"><button class="btn" id="copy-one">Copiar</button></div>`, {
+          onMount: (mm) => { mm.querySelector('#copy-one').onclick = () => { navigator.clipboard?.writeText(r.link); toast('Copiado'); }; },
+        });
+        go('/cadastros?aba=open');
+        reload();
+      }, e.submitter); };
+    },
+  });
+}
+
+async function pageApplication(main, id) {
+  const a = await api('GET', `/applications/${id}`);
+  const reload = () => pageApplication(main, id);
+  const closed = ['approved', 'rejected'].includes(a.status);
+  const byType = a.document_types.map((t) => ({ t, files: a.files.filter((f) => f.document_type_id === t.id) }));
+  const others = a.files.filter((f) => !a.document_types.some((t) => t.id === f.document_type_id));
+  const row = (label, v) => `<div class="summary-row"><span class="muted">${label}</span><span>${v || '—'}</span></div>`;
+  const fileCard = (f) => `<div class="review-file ${f.status}">
+      ${fileThumb(f)}
+      <div class="review-actions">
+        ${f.reject_reason ? `<div class="small" style="color:var(--danger)">Motivo: ${esc(f.reject_reason)}</div>` : ''}
+        <div class="small muted">${dateTimeBR(f.created_at)} · ${Math.max(1, Math.round(f.size / 1024))} KB</div>
+        ${closed ? '' : `<div class="btn-row">${f.status !== 'approved' ? `<button class="btn sm" data-approve="${f.id}">✓ Aprovar</button>` : ''}${f.status !== 'rejected' ? `<button class="btn sm danger" data-reject="${f.id}">✕ Recusar</button>` : ''}</div>`}
+      </div></div>`;
+  main.innerHTML = `<div class="page-head"><div><a href="#/cadastros" class="small">← Cadastros</a><h1>${esc(a.name || 'Cadastro sem nome')} ${appBadge(a.status)}</h1>
+    <div class="muted small">${esc(a.phone || '')}${isAdmin() ? ` · Conta: <strong>${esc(a.account_name || '')}</strong>` : ''} · criado ${dateTimeBR(a.created_at)}${a.submitted_at ? ` · enviado ${dateTimeBR(a.submitted_at)}` : ''}</div></div>
+    <div class="actions">${a.wa_link ? `<a class="btn wa" href="${esc(a.wa_link)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+      <button class="btn" id="copy-link">Copiar link do cliente</button>
+      ${a.client_id ? `<a class="btn primary" href="#/clientes/${a.client_id}">Ver cliente</a><a class="btn primary" href="#/emprestimos/novo?cliente=${a.client_id}">+ Empréstimo</a>` : ''}</div></div>
+    ${!closed ? `<div class="card review-bar">
+      <div class="small">${a.status === 'submitted' ? 'Revise cada documento abaixo e decida:' : a.status === 'needs_changes' ? 'Aguardando o cliente reenviar as correções.' : 'O cliente ainda não terminou de enviar o cadastro.'}</div>
+      <div class="btn-row"><button class="btn" id="ask-changes">Pedir correções</button><button class="btn danger" id="reject-app">Recusar cadastro</button><button class="btn primary" id="approve-app">✓ Aprovar cadastro</button></div></div>` : ''}
+    ${a.review_notes && a.status === 'needs_changes' ? `<div class="card" style="margin-bottom:16px"><strong>Correções pedidas:</strong><div class="pre small">${esc(a.review_notes)}</div></div>` : ''}
+    <div class="grid cols-2">
+      <div>
+        <div class="card"><h2>Dados informados</h2>
+          ${row('Nome', esc(a.name))}${row('CPF', esc(a.document))}${row('Nascimento', a.birth_date ? dateBR(a.birth_date) : '')}${row('WhatsApp', esc(a.phone))}
+          ${row('E-mail', esc(a.email))}${row('Endereço', esc(a.address))}${row('Profissão', esc(a.occupation))}${row('Renda', a.income_cents ? brl(a.income_cents) : '')}
+          ${row('Valor pedido', a.requested_cents ? `<strong>${brl(a.requested_cents)}</strong>` : '')}${row('Parcelas desejadas', a.requested_installments || '')}
+          ${a.client_notes ? `<div class="pre small" style="margin-top:8px">${esc(a.client_notes)}</div>` : ''}
+        </div>
+        <div class="card"><h2>Conversa e histórico</h2>
+          <div class="timeline">${a.messages.length ? a.messages.map(msgBubble).join('') : '<div class="empty">Sem mensagens</div>'}</div></div>
+      </div>
+      <div class="card"><h2>Documentos</h2>
+        ${byType.map(({ t, files }) => `<div class="review-type"><div class="review-type-head"><strong>${esc(t.name)}</strong>${t.required ? '' : ' <span class="small muted">(opcional)</span>'}
+          ${files.length ? '' : '<span class="badge warn">não enviado</span>'}</div>${files.map(fileCard).join('')}</div>`).join('')}
+        ${others.length ? `<div class="review-type"><div class="review-type-head"><strong>Outros</strong></div>${others.map(fileCard).join('')}</div>` : ''}
+      </div>
+    </div>`;
+  bindFileViewer(main);
+  bindMessageActions(main, reload);
+  $('#copy-link').onclick = () => { navigator.clipboard?.writeText(a.link); toast('Link copiado'); };
+  for (const b of $$('[data-approve]', main)) b.onclick = () => guard(async () => { await api('PUT', `/application-files/${b.dataset.approve}`, { status: 'approved' }); reload(); }, b);
+  for (const b of $$('[data-reject]', main)) b.onclick = () => modal('Recusar documento', `<form>
+      <div class="field"><label>Motivo (o cliente verá esta mensagem)</label><input name="reason" required placeholder="ex.: foto borrada, documento vencido, rosto não aparece"></div>
+      <div class="chips">${['Foto borrada', 'Documento cortado', 'Documento ilegível', 'Rosto não aparece', 'Documento vencido', 'Comprovante desatualizado'].map((r) => `<button type="button" data-reason="${r}">${r}</button>`).join('')}</div>
+      <div class="modal-foot"><button class="btn danger">Recusar</button></div></form>`, {
+    onMount: (m, close) => {
+      for (const c of $$('[data-reason]', m)) c.onclick = () => { m.querySelector('[name=reason]').value = c.dataset.reason; };
+      m.querySelector('form').onsubmit = (e) => { e.preventDefault(); guard(async () => { await api('PUT', `/application-files/${b.dataset.reject}`, { status: 'rejected', reason: formData(e.target).reason }); close(); reload(); }, e.submitter); };
+    },
+  });
+  const after = async (r, okMsg) => {
+    if (r.message?.status === 'pending_manual' && r.message.wa_link && await confirmDialog('Abrir o WhatsApp para avisar o cliente?', 'Abrir WhatsApp')) {
+      openWa(r.message.wa_link); await api('POST', `/messages/${r.message.id}/mark-sent`);
+    } else if (r.message?.status === 'failed') toast('Aviso não enviado: ' + r.message.error, 'error');
+    else toast(okMsg);
+    refreshBadges();
+  };
+  if ($('#ask-changes')) $('#ask-changes').onclick = () => modal('Pedir correções', `<form>
+      <p class="small muted">Os documentos recusados (com o motivo) serão enviados ao cliente com o link para reenviar.</p>
+      <div class="field"><label>Observação adicional (opcional)</label><textarea name="note" rows="3" placeholder="ex.: envie também um comprovante de renda mais recente"></textarea></div>
+      <div class="modal-foot"><button class="btn primary">Enviar pedido de correção</button></div></form>`, {
+    onMount: (m, close) => { m.querySelector('form').onsubmit = (e) => { e.preventDefault(); guard(async () => {
+      const r = await api('POST', `/applications/${a.id}/request-changes`, formData(e.target)); close(); await after(r, 'Correção solicitada ao cliente'); reload(); }, e.submitter); }; },
+  });
+  if ($('#reject-app')) $('#reject-app').onclick = () => modal('Recusar cadastro', `<form>
+      <div class="field"><label>Motivo interno (opcional)</label><textarea name="note" rows="3"></textarea></div>
+      <label class="check"><input type="checkbox" name="notify" checked> Avisar o cliente no WhatsApp</label>
+      <div class="modal-foot"><button class="btn danger">Recusar cadastro</button></div></form>`, {
+    onMount: (m, close) => { m.querySelector('form').onsubmit = (e) => { e.preventDefault(); guard(async () => {
+      const r = await api('POST', `/applications/${a.id}/reject`, formData(e.target)); close(); await after(r, 'Cadastro recusado'); reload(); }, e.submitter); }; },
+  });
+  if ($('#approve-app')) $('#approve-app').onclick = () => guard(async () => {
+    let r;
+    try {
+      r = await api('POST', `/applications/${a.id}/approve`, { notify: true });
+    } catch (err) {
+      if (!(await confirmDialog(`${err.message}`, 'Aprovar mesmo assim'))) return;
+      r = await api('POST', `/applications/${a.id}/approve`, { notify: true, force: true });
+    }
+    await after(r, 'Cadastro aprovado — cliente criado');
+    if (await confirmDialog('Cadastro aprovado e cliente criado. Liberar o empréstimo agora?', 'Liberar empréstimo')) {
+      go(`/emprestimos/novo?cliente=${r.client_id}${a.requested_cents ? `&valor=${a.requested_cents}` : ''}${a.requested_installments ? `&parcelas=${a.requested_installments}` : ''}`);
+    } else go(`/clientes/${r.client_id}`);
+  }, $('#approve-app'));
+}
+
+// ---------- Afiliados (conta central) ----------
+async function pageAccounts(main) {
+  if (!isAdmin()) { main.innerHTML = '<div class="card empty">Acesso restrito à conta central.</div>'; return; }
+  const list = await api('GET', '/accounts');
+  const reload = () => pageAccounts(main);
+  const prov = { manual: 'Manual', evolution: 'Evolution', zapi: 'Z-API', cloud: 'Cloud API', webhook: 'CRM/URL' };
+  main.innerHTML = `<div class="page-head"><div><h1>Afiliados</h1><div class="muted small">Cada afiliado tem login próprio e vê apenas os próprios clientes. Você vê tudo.</div></div>
+    <div class="actions"><button class="btn primary" id="new-acc">+ Novo afiliado</button></div></div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Conta</th><th class="right">Clientes</th><th class="right">Emprestado</th><th class="right">A receber</th><th class="right">Em atraso</th><th class="right">Recebido</th><th>Cadastros</th><th>WhatsApp</th><th></th></tr></thead><tbody>
+    ${list.map((u) => `<tr><td><strong>${u.role === 'admin' ? '⭐ ' : ''}${esc(u.name)}</strong> ${u.active ? '' : '<span class="badge">inativa</span>'}<div class="small muted">${esc(u.email)}</div></td>
+      <td class="num right">${u.clients}</td><td class="num right">${brl(u.lent_cents)}</td><td class="num right">${brl(u.receivable_cents)}</td>
+      <td class="num right">${u.overdue_cents ? `<span style="color:var(--danger)">${brl(u.overdue_cents)}</span>` : '—'}</td><td class="num right">${brl(u.received_cents)}</td>
+      <td>${u.pending_applications ? `<span class="badge info">${u.pending_applications} p/ analisar</span>` : '—'}</td>
+      <td class="small">${prov[u.wa_provider] || u.wa_provider}</td>
+      <td class="right"><div class="btn-row" style="justify-content:flex-end"><button class="btn sm" data-view="${u.id}">Ver painel</button><a class="btn sm" href="#/config?conta=${u.id}">WhatsApp</a>${u.role === 'admin' ? '' : `<button class="btn sm" data-edit="${u.id}">Editar</button>`}</div></td></tr>`).join('')}
+    </tbody></table></div></div>`;
+  for (const b of $$('[data-view]', main)) b.onclick = () => { setScope(b.dataset.view); for (const o of $$('.scope-select')) o.value = b.dataset.view; refreshBadges(); go('/dashboard'); };
+  const dialog = (u) => modal(u ? 'Editar afiliado' : 'Novo afiliado', `<form><div class="form-grid">
+      <div class="field full"><label>Nome</label><input name="name" required value="${esc(u?.name)}"></div>
+      <div class="field"><label>E-mail (login)</label><input type="email" name="email" required value="${esc(u?.email)}"></div>
+      <div class="field"><label>Telefone</label><input name="phone" value="${esc(u?.phone)}"></div>
+      <div class="field"><label>${u ? 'Nova senha (deixe em branco para manter)' : 'Senha inicial'}</label><input type="text" name="password" ${u ? '' : 'required minlength="6"'} autocomplete="new-password"></div>
+      ${u ? `<div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Conta ativa</label></div>` : ''}
+    </div><div class="modal-foot"><button type="button" class="btn" data-cancel>Cancelar</button><button class="btn primary">Salvar</button></div></form>`, {
+    onMount: (m, close) => {
+      m.querySelector('[data-cancel]').onclick = close;
+      m.querySelector('form').onsubmit = (e) => { e.preventDefault(); guard(async () => {
+        const f = formData(e.target);
+        if (u && !f.password) delete f.password;
+        await api(u ? 'PUT' : 'POST', u ? `/accounts/${u.id}` : '/accounts', f);
+        close(); toast(u ? 'Afiliado atualizado' : `Afiliado criado. Passe o e-mail e a senha para ${f.name}.`);
+        await reloadAccounts(); router();
+      }, e.submitter); };
+    },
+  });
+  $('#new-acc').onclick = () => dialog(null);
+  for (const b of $$('[data-edit]', main)) b.onclick = () => dialog(list.find((u) => u.id == b.dataset.edit));
+}
+
+function pageMore(main) {
+  main.innerHTML = `<div class="page-head"><h1>Mais</h1></div>${isAdmin() ? `<div class="card"><label>Visualizando</label><select class="scope-select"><option value="">🌐 Todas as contas</option>${ACCOUNTS.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>` : ''}
+    <div class="card">${navItems().filter(([k]) => !MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a class="list-item" href="#/${k}" style="color:var(--text)"><span>${i} ${t}</span><span class="muted">›</span></a>`).join('')}
+    <a class="list-item" href="#" id="logout-m" style="color:var(--danger)"><span>Sair (${esc(ME.name)})</span></a></div>`;
+  for (const sel of $$('.scope-select', main)) { sel.value = getScope(); sel.onchange = () => { setScope(sel.value); for (const o of $$('.scope-select')) o.value = sel.value; refreshBadges(); toast('Conta alterada'); }; }
+  $('#logout-m').onclick = async (e) => { e.preventDefault(); await logout(); };
+}
+
 // ---------- Configurações ----------
-async function pageSettings(main) {
-  const s = await api('GET', '/settings');
-  const webhookUrl = `${location.origin}/api/webhooks/whatsapp/${s.wa_inbound_token}`;
-  const reload = () => pageSettings(main);
-  main.innerHTML = `<div class="page-head"><h1>Configurações</h1></div>
-    <form id="settings-form">
-    <div class="card"><h2>Negócio</h2><div class="form-grid">
-      <div class="field"><label>Nome exibido nas mensagens</label><input name="business_name" value="${esc(s.business_name)}"></div>
-      <div class="field"><label>Chave PIX</label><input name="pix_key" value="${esc(s.pix_key)}" placeholder="CPF, e-mail, telefone ou aleatória"></div>
-      <div class="field"><label>Multa padrão por atraso (%)</label><input name="default_late_fee_percent" value="${esc(s.default_late_fee_percent)}"></div>
-      <div class="field"><label>Juros de mora padrão (% ao dia)</label><input name="default_late_interest_daily" value="${esc(s.default_late_interest_daily)}"><div class="hint">0,033% ao dia ≈ 1% ao mês</div></div>
-      <div class="field"><label>Fuso horário</label><input name="timezone" value="${esc(s.timezone)}"></div>
-      <div class="field"><label>DDI padrão</label><input name="default_country_code" value="${esc(s.default_country_code)}"></div>
+const BOOL_SETTINGS = ['automations_enabled', 'send_receipt_on_payment', 'send_release_message', 'bot_enabled', 'bot_new_contact'];
+
+async function pageSettings(main, query) {
+  const target = isAdmin() ? (query?.get?.('conta') || getScope() || ME.id) : ME.id;
+  const acc = await api('GET', `/account-settings${isAdmin() ? `?account=${target}` : ''}`);
+  const s = acc.settings;
+  const g = await api('GET', '/settings');
+  const reload = () => pageSettings(main, query);
+  const qs = isAdmin() ? `?account=${target}` : '';
+  main.innerHTML = `<div class="page-head"><h1>Configurações</h1>
+    ${isAdmin() ? `<div class="actions"><label class="small muted" style="margin:0">Configurar conta:</label><select id="cfg-acc" class="btn">${ACCOUNTS.map((a) => `<option value="${a.id}" ${String(a.id) === String(target) ? 'selected' : ''}>${a.role === 'admin' ? '⭐ ' : ''}${esc(a.name)}</option>`).join('')}</select></div>` : ''}</div>
+    <form id="acc-form">
+    <div class="card"><h2>Conta: ${esc(acc.account.name)}</h2><div class="form-grid">
+      <div class="field"><label>Nome exibido nas mensagens</label><input name="business_name" value="${esc(s.business_name)}" placeholder="${esc(acc.account.name)}"></div>
+      <div class="field"><label>Chave PIX para cobranças</label><input name="pix_key" value="${esc(s.pix_key)}" placeholder="CPF, e-mail, telefone ou aleatória"></div>
+      <div class="field full"><label>Link de cadastro desta conta (para divulgar)</label><div style="display:flex;gap:8px"><input readonly value="${esc(acc.signup_url)}"><button type="button" class="btn" data-copy="${esc(acc.signup_url)}">Copiar</button></div></div>
     </div></div>
-    <div class="card"><h2>Automação de cobranças</h2><div class="form-grid">
-      <div class="field full"><label class="check"><input type="checkbox" name="scheduler_enabled" ${s.scheduler_enabled === '1' ? 'checked' : ''}> Enviar avisos automaticamente conforme as regras</label></div>
-      <div class="field"><label>Enviar a partir de</label><input type="time" name="send_window_start" value="${esc(s.send_window_start)}"></div>
-      <div class="field"><label>Enviar até</label><input type="time" name="send_window_end" value="${esc(s.send_window_end)}"></div>
-      <div class="field"><label>Verificar a cada (minutos)</label><input type="number" min="1" name="scheduler_interval_minutes" value="${esc(s.scheduler_interval_minutes)}"></div>
-      <div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="send_receipt_on_payment" ${s.send_receipt_on_payment === '1' ? 'checked' : ''}> Enviar recibo ao registrar pagamento</label></div>
-      <div class="field full"><label class="check"><input type="checkbox" name="send_release_message" ${s.send_release_message === '1' ? 'checked' : ''}> Ao cadastrar um empréstimo, enviar a confirmação com as datas de cobrança</label></div>
-    </div></div>
-    <div class="card"><h2>WhatsApp — conexão</h2>
+    <div class="card"><h2>WhatsApp desta conta</h2>
       <div id="wa-conn" class="wa-conn"><span class="muted small">Verificando conexão…</span></div>
       <div class="field"><label>Forma de envio</label><select name="wa_provider">
-        <option value="evolution">Evolution API — conecta o seu número por QR Code (gratuita, auto-hospedada)</option>
-        <option value="zapi">Z-API — conecta o seu número por QR Code (serviço pago)</option>
+        <option value="zapi">Z-API — conecta o número por QR Code (serviço pago, ideal para a Vercel)</option>
+        <option value="evolution">Evolution API — conecta o número por QR Code (precisa de servidor próprio)</option>
         <option value="cloud">WhatsApp Cloud API (oficial da Meta)</option>
-        <option value="webhook">Meu CRM / automação (envia para uma URL: n8n, Make, CRM próprio…)</option>
+        <option value="webhook">Meu CRM / automação (envia para uma URL: n8n, Make…)</option>
         <option value="manual">Manual — abre o WhatsApp com a mensagem pronta (sem conexão)</option></select></div>
-      <div data-prov="cloud" class="form-grid">
-        <div class="field"><label>Token de acesso</label><input name="wa_cloud_token" value="${esc(s.wa_cloud_token)}" autocomplete="off"></div>
-        <div class="field"><label>Phone Number ID</label><input name="wa_cloud_phone_id" value="${esc(s.wa_cloud_phone_id)}"></div>
-        <div class="field"><label>Versão da API</label><input name="wa_cloud_api_version" value="${esc(s.wa_cloud_api_version)}"></div>
-        <div class="hint full">Atenção: pela regra da Meta, mensagens livres só são entregues se o cliente falou com você nas últimas 24h. Fora disso é preciso usar modelos aprovados.</div>
+      <div data-prov="zapi" class="form-grid">
+        <div class="field"><label>ID da instância</label><input name="wa_zapi_instance" value="${esc(s.wa_zapi_instance)}"></div>
+        <div class="field"><label>Token da instância</label><input name="wa_zapi_token" value="${esc(s.wa_zapi_token)}" autocomplete="off"></div>
+        <div class="field"><label>Client-Token (segurança)</label><input name="wa_zapi_client_token" value="${esc(s.wa_zapi_client_token)}" autocomplete="off"></div>
       </div>
       <div data-prov="evolution" class="form-grid">
         <div class="field"><label>URL da API</label><input name="wa_evolution_url" value="${esc(s.wa_evolution_url)}" placeholder="https://evolution.seudominio.com"></div>
         <div class="field"><label>Nome da instância</label><input name="wa_evolution_instance" value="${esc(s.wa_evolution_instance)}"></div>
         <div class="field"><label>API Key</label><input name="wa_evolution_apikey" value="${esc(s.wa_evolution_apikey)}" autocomplete="off"></div>
       </div>
-      <div data-prov="zapi" class="form-grid">
-        <div class="field"><label>ID da instância</label><input name="wa_zapi_instance" value="${esc(s.wa_zapi_instance)}"></div>
-        <div class="field"><label>Token da instância</label><input name="wa_zapi_token" value="${esc(s.wa_zapi_token)}" autocomplete="off"></div>
-        <div class="field"><label>Client-Token (segurança)</label><input name="wa_zapi_client_token" value="${esc(s.wa_zapi_client_token)}" autocomplete="off"></div>
+      <div data-prov="cloud" class="form-grid">
+        <div class="field"><label>Token de acesso</label><input name="wa_cloud_token" value="${esc(s.wa_cloud_token)}" autocomplete="off"></div>
+        <div class="field"><label>Phone Number ID</label><input name="wa_cloud_phone_id" value="${esc(s.wa_cloud_phone_id)}"></div>
+        <div class="field"><label>Versão da API</label><input name="wa_cloud_api_version" value="${esc(s.wa_cloud_api_version)}"></div>
+        <div class="hint full">A Meta só entrega texto livre se o cliente falou com você nas últimas 24h; lembretes fora disso exigem modelos aprovados.</div>
       </div>
       <div data-prov="webhook" class="form-grid">
-        <div class="field full"><label>URL do seu CRM / automação</label><input name="wa_webhook_url" value="${esc(s.wa_webhook_url)}"><div class="hint">Cada cobrança é enviada como POST JSON <code>{"phone": "5511999999999", "message": "texto"}</code>. Seu CRM ou automação faz o envio no WhatsApp.</div></div>
+        <div class="field full"><label>URL do seu CRM / automação</label><input name="wa_webhook_url" value="${esc(s.wa_webhook_url)}"><div class="hint">Cada mensagem vai como POST JSON <code>{"phone","message","account_id"}</code>.</div></div>
       </div>
-      <div data-prov="cloud evolution zapi" style="margin-top:6px">
-        <label>Webhook de respostas (cole no seu provedor para receber mensagens dos clientes no CRM)</label>
-        <div style="display:flex;gap:8px"><input readonly value="${esc(webhookUrl)}" id="wh"><button type="button" class="btn" id="copy-wh">Copiar</button></div>
-        <div class="hint">Para a Cloud API, use também este token como “Verify token” (qualquer valor é aceito).</div>
+      <div data-prov="zapi evolution cloud" style="margin-top:6px">
+        <label>Webhook de mensagens recebidas (cole no painel do provedor)</label>
+        <div style="display:flex;gap:8px"><input readonly value="${esc(acc.webhook_url)}"><button type="button" class="btn" data-copy="${esc(acc.webhook_url)}">Copiar</button></div>
+        <div class="hint">É por ele que o site recebe as mensagens: novos contatos ganham o link de cadastro e clientes recebem o menu do bot.</div>
       </div>
       <div class="btn-row" style="margin-top:12px"><input id="test-phone" placeholder="Telefone para teste" style="max-width:220px"><button type="button" class="btn" id="test-wa">Enviar teste</button></div>
     </div>
-    <div class="card save-bar"><button class="btn primary">Salvar configurações</button></div>
+    <div class="card save-bar"><button class="btn primary">Salvar conta</button></div>
     </form>
-    <div class="grid cols-2" style="margin-top:16px">
-      <form class="card" id="pw-form"><h2>Alterar senha</h2>
-        <div class="field"><label>Senha atual</label><input type="password" name="current" required autocomplete="current-password"></div>
-        <div class="field"><label>Nova senha</label><input type="password" name="password" required minlength="6" autocomplete="new-password"></div>
-        <button class="btn">Alterar senha</button></form>
-      <div class="card"><h2>Backup</h2><p class="small muted">Baixe uma cópia completa dos dados (clientes, empréstimos, pagamentos, mensagens). Guarde em local seguro.</p>
-        <div class="btn-row"><a class="btn" href="/api/backup">⬇ Baixar backup</a><label class="btn" style="margin:0;color:var(--text)">⬆ Restaurar<input type="file" id="restore" accept="application/json" hidden></label></div></div>
-    </div>`;
-  const form = $('#settings-form');
+    ${isAdmin() ? `<form id="sys-form">
+    <div class="card"><h2>Sistema (vale para todas as contas)</h2><div class="form-grid">
+      <div class="field"><label>Nome do sistema</label><input name="system_name" value="${esc(g.system_name)}"></div>
+      <div class="field"><label>Fuso horário</label><input name="timezone" value="${esc(g.timezone)}"></div>
+      <div class="field"><label>Multa padrão por atraso (%)</label><input name="default_late_fee_percent" value="${esc(g.default_late_fee_percent)}"></div>
+      <div class="field"><label>Juros de mora padrão (% ao dia)</label><input name="default_late_interest_daily" value="${esc(g.default_late_interest_daily)}"><div class="hint">0,033% ao dia ≈ 1% ao mês</div></div>
+      <div class="field"><label>DDI padrão</label><input name="default_country_code" value="${esc(g.default_country_code)}"></div>
+      <div class="field"></div>
+      <div class="field full"><label class="check"><input type="checkbox" name="automations_enabled" ${g.automations_enabled === '1' ? 'checked' : ''}> Enviar cobranças automáticas (diariamente pela manhã)</label>
+        <label class="check"><input type="checkbox" name="send_release_message" ${g.send_release_message === '1' ? 'checked' : ''}> Ao liberar um empréstimo, enviar a confirmação com as datas de cobrança</label>
+        <label class="check"><input type="checkbox" name="send_receipt_on_payment" ${g.send_receipt_on_payment === '1' ? 'checked' : ''}> Enviar recibo ao registrar pagamento</label></div>
+    </div></div>
+    <div class="card"><h2>Bot do WhatsApp</h2>
+      <label class="check"><input type="checkbox" name="bot_enabled" ${g.bot_enabled === '1' ? 'checked' : ''}> Ativar respostas automáticas</label>
+      <label class="check"><input type="checkbox" name="bot_new_contact" ${g.bot_new_contact === '1' ? 'checked' : ''}> Novo contato recebe o link de cadastro</label>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field"><label>Boas-vindas + link de cadastro</label><textarea name="bot_welcome" rows="7">${esc(g.bot_welcome)}</textarea><div class="hint">{link} = link de cadastro da pessoa · {empresa}</div></div>
+        <div class="field"><label>Cadastro iniciado e não terminado</label><textarea name="bot_pending" rows="7">${esc(g.bot_pending)}</textarea></div>
+        <div class="field"><label>Cadastro em análise</label><textarea name="bot_in_review" rows="4">${esc(g.bot_in_review)}</textarea></div>
+        <div class="field"><label>Menu para clientes (“oi”, “menu”…)</label><textarea name="bot_menu" rows="4">${esc(g.bot_menu)}</textarea><div class="hint">1 = próxima parcela · 2 = saldo · 3 = PIX · 4 = atendente</div></div>
+        <div class="field full"><label>Resposta ao pedir atendente</label><input name="bot_human_reply" value="${esc(g.bot_human_reply)}"></div>
+      </div></div>
+    <div class="card"><h2>Mensagens da análise de cadastro</h2><div class="form-grid">
+      <div class="field"><label>Correções necessárias</label><textarea name="msg_needs_changes" rows="6">${esc(g.msg_needs_changes)}</textarea><div class="hint">{pendencias} = documentos recusados e motivos · {link}</div></div>
+      <div class="field"><label>Cadastro aprovado</label><textarea name="msg_approved" rows="6">${esc(g.msg_approved)}</textarea></div>
+      <div class="field"><label>Cadastro recusado</label><textarea name="msg_rejected" rows="4">${esc(g.msg_rejected)}</textarea></div>
+    </div></div>
+    <div class="card save-bar"><button class="btn primary">Salvar sistema</button></div>
+    </form>
+    <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Documentos exigidos no cadastro</h2><button class="btn sm primary" id="new-doc">+ Documento</button></div>
+      <div id="doc-list"></div></div>` : ''}
+    <form class="card" id="pw-form" style="margin-top:16px"><h2>Alterar minha senha</h2><div class="form-grid">
+      <div class="field"><label>Senha atual</label><input type="password" name="current" required autocomplete="current-password"></div>
+      <div class="field"><label>Nova senha</label><input type="password" name="password" required minlength="6" autocomplete="new-password"></div></div>
+      <button class="btn">Alterar senha</button></form>`;
+
+  const form = $('#acc-form');
   form.wa_provider.value = s.wa_provider;
   const syncProv = () => { for (const el of $$('[data-prov]', main)) el.style.display = el.dataset.prov.split(' ').includes(form.wa_provider.value) ? '' : 'none'; };
   form.wa_provider.onchange = syncProv; syncProv();
+  for (const b of $$('[data-copy]', main)) b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); toast('Copiado'); };
+  if ($('#cfg-acc')) $('#cfg-acc').onchange = (e) => go(`/config?conta=${e.target.value}`);
+  form.onsubmit = (e) => { e.preventDefault(); guard(async () => { await api('PUT', `/account-settings${qs}`, formData(form)); toast('Conta salva'); reload(); }, e.submitter); };
+  $('#test-wa').onclick = (e) => guard(async () => {
+    await api('PUT', `/account-settings${qs}`, formData(form));
+    const r = await api('POST', `/whatsapp/test${qs}`, { phone: $('#test-phone').value });
+    toast(r.status === 'pending_manual' ? 'Modo manual: nada foi enviado automaticamente' : 'Mensagem de teste enviada!');
+  }, e.target);
   const conn = async () => {
     const el = $('#wa-conn');
     if (!el) return;
-    const st = await api('GET', '/whatsapp/status');
+    const st = await api('GET', `/whatsapp/status${qs}`);
     const dot = st.provider === 'manual' ? 'warn' : st.connected ? 'ok' : 'danger';
-    const label = st.provider === 'manual' ? 'Modo manual (sem conexão)' : st.connected ? 'Conectado — cobranças saem automaticamente' : 'Desconectado';
+    const label = st.provider === 'manual' ? 'Modo manual (sem conexão)' : st.connected ? 'Conectado — mensagens saem automaticamente' : 'Desconectado';
     el.innerHTML = `<span class="badge ${dot}">● ${label}</span> <span class="small muted">${esc(st.error || st.detail || '')}</span>
-      ${st.can_qr || ['evolution', 'zapi'].includes(st.provider) ? `<button type="button" class="btn sm wa" id="wa-qr">${st.connected ? 'Reconectar' : 'Conectar com QR Code'}</button>` : ''}`;
+      ${['evolution', 'zapi'].includes(st.provider) ? `<button type="button" class="btn sm wa" id="wa-qr">${st.connected ? 'Reconectar' : 'Conectar com QR Code'}</button>` : ''}`;
     const qrBtn = $('#wa-qr');
     if (qrBtn) qrBtn.onclick = () => guard(async () => {
-      const q = await api('POST', '/whatsapp/qr');
+      const q = await api('POST', `/whatsapp/qr${qs}`);
       if (q.connected) { toast(q.message); return conn(); }
       const close = modal('Conectar WhatsApp', `<div style="text-align:center"><p class="small">No celular: WhatsApp → <strong>Aparelhos conectados</strong> → <strong>Conectar um aparelho</strong> e aponte para o código.</p>
         <img src="${esc(q.image)}" alt="QR Code" style="width:280px;max-width:100%;background:#fff;padding:8px;border-radius:12px">
@@ -980,33 +1300,42 @@ async function pageSettings(main) {
         <p class="small muted" id="qr-wait">Aguardando leitura…</p></div>`);
       const timer = setInterval(async () => {
         if (!$('#qr-wait')) return clearInterval(timer);
-        const s2 = await api('GET', '/whatsapp/status').catch(() => ({}));
+        const s2 = await api('GET', `/whatsapp/status${qs}`).catch(() => ({}));
         if (s2.connected) { clearInterval(timer); close(); toast('WhatsApp conectado!'); conn(); }
       }, 3000);
     }, qrBtn);
   };
   conn().catch(() => {});
-  $('#copy-wh').onclick = () => { navigator.clipboard?.writeText(webhookUrl); toast('Copiado'); };
-  form.onsubmit = (e) => {
-    e.preventDefault();
-    const f = formData(form);
-    for (const k of ['scheduler_enabled', 'send_receipt_on_payment', 'send_release_message']) f[k] = f[k] ? '1' : '0';
-    for (const k of ['default_late_fee_percent', 'default_late_interest_daily']) f[k] = String(f[k]).replace(',', '.');
-    guard(async () => { await api('PUT', '/settings', f); toast('Configurações salvas'); $('#brand-name').textContent = f.business_name; reload(); }, e.submitter);
-  };
-  $('#test-wa').onclick = (e) => guard(async () => {
-    const f = formData(form);
-    for (const k of ['scheduler_enabled', 'send_receipt_on_payment', 'send_release_message']) f[k] = f[k] ? '1' : '0';
-    await api('PUT', '/settings', f);
-    const phone = $('#test-phone').value;
-    const r = await api('POST', '/settings/test-whatsapp', { phone });
-    if (r.status === 'pending_manual') { openWa(`https://wa.me/${phone.replace(/\D/g, '').replace(/^(?!55)/, s.default_country_code)}?text=${encodeURIComponent('Teste de envio')}`); toast('Modo manual: WhatsApp aberto'); } else toast('Mensagem de teste enviada!');
-  }, e.target);
+
+  if ($('#sys-form')) {
+    $('#sys-form').onsubmit = (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      for (const k of BOOL_SETTINGS) f[k] = f[k] ? '1' : '0';
+      for (const k of ['default_late_fee_percent', 'default_late_interest_daily']) f[k] = String(f[k]).replace(',', '.');
+      guard(async () => { await api('PUT', '/settings', f); toast('Configurações do sistema salvas'); SYSTEM_NAME = f.system_name; $('#brand-name').textContent = f.system_name; }, e.submitter);
+    };
+    const renderDocs = async () => {
+      const docs = await api('GET', '/document-types');
+      const KIND = { image: '📷 Foto', video: '🎥 Vídeo', file: '📄 Foto ou PDF' };
+      $('#doc-list').innerHTML = docs.filter((d) => d.active).map((d) => `<div class="list-item"><div class="main"><strong>${esc(d.name)}</strong>
+        <span class="small muted">${KIND[d.kind]} · ${d.required ? 'obrigatório' : 'opcional'}${d.instructions ? ' · ' + esc(d.instructions) : ''}</span></div>
+        <div class="btn-row"><button class="btn sm" data-edit-doc="${d.id}">Editar</button><button class="btn sm danger" data-del-doc="${d.id}">🗑</button></div></div>`).join('') || '<div class="empty">Nenhum documento exigido</div>';
+      const dlg = (d) => modal(d ? 'Editar documento' : 'Novo documento', `<form><div class="form-grid">
+          <div class="field full"><label>Nome</label><input name="name" required value="${esc(d?.name)}"></div>
+          <div class="field"><label>Tipo</label><select name="kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${d?.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+          <div class="field"><label>Ordem</label><input type="number" name="sort" value="${d?.sort ?? docs.length}"></div>
+          <div class="field full"><label>Instruções para o cliente</label><input name="instructions" value="${esc(d?.instructions)}"></div>
+          <div class="field full"><label class="check"><input type="checkbox" name="required" ${d?.required === false ? '' : 'checked'}> Obrigatório</label></div></div>
+          <div class="modal-foot"><button class="btn primary">Salvar</button></div></form>`, {
+        onMount: (m, close) => { m.querySelector('form').onsubmit = (e) => { e.preventDefault(); guard(async () => {
+          await api(d ? 'PUT' : 'POST', d ? `/document-types/${d.id}` : '/document-types', formData(e.target)); close(); renderDocs(); }, e.submitter); }; },
+      });
+      $('#new-doc').onclick = () => dlg(null);
+      for (const b of $$('[data-edit-doc]', main)) b.onclick = () => dlg(docs.find((d) => d.id == b.dataset.editDoc));
+      for (const b of $$('[data-del-doc]', main)) b.onclick = async () => { if (await confirmDialog('Remover este documento da lista exigida?', 'Remover')) guard(async () => { await api('DELETE', `/document-types/${b.dataset.delDoc}`); renderDocs(); }); };
+    };
+    renderDocs();
+  }
   $('#pw-form').onsubmit = (e) => { e.preventDefault(); guard(async () => { await api('POST', '/auth/password', formData(e.target)); e.target.reset(); toast('Senha alterada'); }, e.submitter); };
-  $('#restore').onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!(await confirmDialog('Restaurar o backup vai SUBSTITUIR todos os dados atuais. Continuar?', 'Restaurar'))) return;
-    guard(async () => { await api('POST', '/restore', JSON.parse(await file.text())); toast('Backup restaurado'); start(); });
-  };
 }
