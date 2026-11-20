@@ -34,7 +34,9 @@ function createApp(opts = {}) {
   const getDb = () => (dbPromise ||= DB.connect().catch((e) => { dbPromise = null; throw e; }));
   let db; // preenchido pelo middleware abaixo
 
-  app.use(async (req, res, next) => { try { db = await getDb(); next(); } catch (e) { next(e); } });
+  // Páginas e arquivos do painel (na Vercel normalmente vêm da CDN; aqui é o reserva).
+  app.use(express.static(require('node:path').join(__dirname, '..', 'public')));
+  app.use('/api', async (req, res, next) => { try { db = await getDb(); next(); } catch (e) { next(e); } });
   app.use(express.json({ limit: '2mb' }));
 
   const baseUrl = (req) => (process.env.PUBLIC_URL ? null : `${req.protocol}://${req.get('host')}`);
