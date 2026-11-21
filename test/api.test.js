@@ -122,6 +122,21 @@ test('conta central x afiliados: cada um vê só o seu, a central vê tudo', asy
     assert.strictEqual((await ana('GET', '/api/dashboard')).status, 401);
     assert.strictEqual((await t.browser()('POST', '/api/auth/login', { email: 'ana@x.com', password: 'senha123' })).status, 403);
 
+    // Segundo administrador (suporte) com acesso total
+    const sup = await admin('POST', '/api/accounts', { name: 'Suporte', email: 'suporte@x.com', password: 'suporte1', role: 'admin' });
+    assert.strictEqual(sup.status, 201);
+    assert.strictEqual(sup.data.role, 'admin');
+    const suporte = t.browser();
+    await suporte('POST', '/api/auth/login', { email: 'suporte@x.com', password: 'suporte1' });
+    assert.strictEqual((await suporte('GET', '/api/accounts')).status, 200);
+    assert.strictEqual((await suporte('GET', `/api/loans/${l1.data.id}`)).status, 200);
+    // Afiliado não consegue se promover; sempre resta um administrador ativo
+    assert.strictEqual((await joao('POST', '/api/accounts', { name: 'X', email: 'x@x.com', password: 'xxxxxx', role: 'admin' })).status, 403);
+    await suporte('PUT', `/api/accounts/${st.data.user.id}`, { active: false });
+    assert.strictEqual((await suporte('PUT', `/api/accounts/${sup.data.id}`, { role: 'affiliate' })).status, 200); // não altera o próprio papel
+    assert.strictEqual((await suporte('GET', '/api/me')).data.user.role, 'admin');
+    await suporte('PUT', `/api/accounts/${st.data.user.id}`, { active: true });
+
     // CSV respeita o escopo
     const csv = (await joao('GET', '/api/export/clientes.csv')).data;
     assert.ok(csv.includes('Maria Souza') && !csv.includes('Pedro'));

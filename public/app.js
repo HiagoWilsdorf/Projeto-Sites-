@@ -127,7 +127,7 @@ const NAV_ALL = [
   ['clientes', '👥', 'Clientes'],
   ['emprestimos', '💰', 'Empréstimos'],
   ['mensagens', '💬', 'Mensagens'],
-  ['afiliados', '🤝', 'Afiliados', 'admin'],
+  ['afiliados', '🤝', 'Afiliados e acessos', 'admin'],
   ['automacoes', '⚙️', 'Automações', 'admin'],
   ['relatorios', '📈', 'Relatórios'],
   ['config', '🔧', 'Configurações'],
@@ -147,7 +147,7 @@ function shell() {
       ${scopeSel}
       <nav class="nav">${navItems().map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
       <div class="spacer"></div>
-      <div class="me-box"><strong>${esc(ME.name)}</strong><span class="small muted">${isAdmin() ? 'Conta central' : 'Afiliado'}</span></div>
+      <div class="me-box"><strong>${esc(ME.name)}</strong><span class="small muted">${isAdmin() ? 'Administrador (acesso total)' : 'Afiliado'}</span></div>
       <a class="btn sm" href="#" id="logout">Sair</a>
     </aside>
     <main id="main"></main>
@@ -1139,23 +1139,24 @@ async function pageAccounts(main) {
   const list = await api('GET', '/accounts');
   const reload = () => pageAccounts(main);
   const prov = { manual: 'Manual', evolution: 'Evolution', zapi: 'Z-API', cloud: 'Cloud API', webhook: 'CRM/URL' };
-  main.innerHTML = `<div class="page-head"><div><h1>Afiliados</h1><div class="muted small">Cada afiliado tem login próprio e vê apenas os próprios clientes. Você vê tudo.</div></div>
-    <div class="actions"><button class="btn primary" id="new-acc">+ Novo afiliado</button></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Afiliados e acessos</h1><div class="muted small">Afiliados veem só os próprios clientes. Administradores (⭐) têm acesso total, como a conta central e o suporte.</div></div>
+    <div class="actions"><button class="btn primary" id="new-acc">+ Nova conta</button></div></div>
     <div class="card"><div class="table-wrap"><table><thead><tr><th>Conta</th><th class="right">Clientes</th><th class="right">Emprestado</th><th class="right">A receber</th><th class="right">Em atraso</th><th class="right">Recebido</th><th>Cadastros</th><th>WhatsApp</th><th></th></tr></thead><tbody>
-    ${list.map((u) => `<tr><td><strong>${u.role === 'admin' ? '⭐ ' : ''}${esc(u.name)}</strong> ${u.active ? '' : '<span class="badge">inativa</span>'}<div class="small muted">${esc(u.email)}</div></td>
+    ${list.map((u) => `<tr><td><strong>${u.role === 'admin' ? '⭐ ' : ''}${esc(u.name)}</strong> ${u.role === 'admin' ? '<span class="badge primary">Administrador</span>' : ''} ${u.id === ME.id ? '<span class="badge">você</span>' : ''} ${u.active ? '' : '<span class="badge">inativa</span>'}<div class="small muted">${esc(u.email)}</div></td>
       <td class="num right">${u.clients}</td><td class="num right">${brl(u.lent_cents)}</td><td class="num right">${brl(u.receivable_cents)}</td>
       <td class="num right">${u.overdue_cents ? `<span style="color:var(--danger)">${brl(u.overdue_cents)}</span>` : '—'}</td><td class="num right">${brl(u.received_cents)}</td>
       <td>${u.pending_applications ? `<span class="badge info">${u.pending_applications} p/ analisar</span>` : '—'}</td>
       <td class="small">${prov[u.wa_provider] || u.wa_provider}</td>
-      <td class="right"><div class="btn-row" style="justify-content:flex-end"><button class="btn sm" data-view="${u.id}">Ver painel</button><a class="btn sm" href="#/config?conta=${u.id}">WhatsApp</a>${u.role === 'admin' ? '' : `<button class="btn sm" data-edit="${u.id}">Editar</button>`}</div></td></tr>`).join('')}
+      <td class="right"><div class="btn-row" style="justify-content:flex-end"><button class="btn sm" data-view="${u.id}">Ver painel</button><a class="btn sm" href="#/config?conta=${u.id}">WhatsApp</a><button class="btn sm" data-edit="${u.id}">Editar</button></div></td></tr>`).join('')}
     </tbody></table></div></div>`;
   for (const b of $$('[data-view]', main)) b.onclick = () => { setScope(b.dataset.view); for (const o of $$('.scope-select')) o.value = b.dataset.view; refreshBadges(); go('/dashboard'); };
-  const dialog = (u) => modal(u ? 'Editar afiliado' : 'Novo afiliado', `<form><div class="form-grid">
+  const dialog = (u) => modal(u ? 'Editar conta' : 'Nova conta', `<form><div class="form-grid">
       <div class="field full"><label>Nome</label><input name="name" required value="${esc(u?.name)}"></div>
       <div class="field"><label>E-mail (login)</label><input type="email" name="email" required value="${esc(u?.email)}"></div>
       <div class="field"><label>Telefone</label><input name="phone" value="${esc(u?.phone)}"></div>
       <div class="field"><label>${u ? 'Nova senha (deixe em branco para manter)' : 'Senha inicial'}</label><input type="text" name="password" ${u ? '' : 'required minlength="6"'} autocomplete="new-password"></div>
-      ${u ? `<div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Conta ativa</label></div>` : ''}
+      ${u?.id === ME.id ? '' : `<div class="field"><label>Tipo de acesso</label><select name="role"><option value="affiliate" ${u?.role !== 'admin' ? 'selected' : ''}>Afiliado — vê só os próprios clientes</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>Administrador — acesso total (central / suporte)</option></select></div>`}
+      ${u && u.id !== ME.id ? `<div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Conta ativa</label></div>` : ''}
     </div><div class="modal-foot"><button type="button" class="btn" data-cancel>Cancelar</button><button class="btn primary">Salvar</button></div></form>`, {
     onMount: (m, close) => {
       m.querySelector('[data-cancel]').onclick = close;
@@ -1163,7 +1164,7 @@ async function pageAccounts(main) {
         const f = formData(e.target);
         if (u && !f.password) delete f.password;
         await api(u ? 'PUT' : 'POST', u ? `/accounts/${u.id}` : '/accounts', f);
-        close(); toast(u ? 'Afiliado atualizado' : `Afiliado criado. Passe o e-mail e a senha para ${f.name}.`);
+        close(); toast(u ? 'Conta atualizada' : `Conta criada. Passe o e-mail e a senha para ${f.name}.`);
         await reloadAccounts(); router();
       }, e.submitter); };
     },

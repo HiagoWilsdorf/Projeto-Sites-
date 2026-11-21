@@ -310,7 +310,8 @@ function createApp(opts = {}) {
 
   api.post('/accounts', async (req, res) => {
     adminOnly(req);
-    const u = await auth.createUser(db, { ...req.body, role: 'affiliate' });
+    // Administradores (central, suporte) têm acesso total; afiliados só aos próprios dados.
+    const u = await auth.createUser(db, { ...req.body, role: req.body?.role === 'admin' ? 'admin' : 'affiliate' });
     res.status(201).json(auth.publicUser(u));
   });
 
@@ -321,8 +322,15 @@ function createApp(opts = {}) {
     const b = req.body || {};
     const email = b.email != null ? str(b.email, 120).toLowerCase() : u.email;
     if (email !== u.email && await db.one('SELECT 1 FROM users WHERE email=$1 AND id<>$2', [email, u.id])) throw bad('E-mail já usado por outra conta');
-    const active = u.id === req.user.id ? true : (b.active != null ? !!b.active : u.active);
-    await db.query('UPDATE users SET name=$1, email=$2, phone=$3, active=$4 WHERE id=$5', [str(b.name ?? u.name, 120) || u.name, email, str(b.phone ?? u.phone, 30), active, u.id]);
+    const self = u.id === req.user.id;
+    const active = self ? true : (b.active != null ? !!b.active : u.active);
+    const role = self ? u.role : (['admin', 'affiliate'].includes(b.role) ? b.role : u.role);
+    // Nunca deixar o sistema sem nenhum administrador ativo.
+    if (u.role === 'admin' && (role !== 'admin' || !active)) {
+      const others = await db.val("SELECT COUNT(*)::int FROM users WHERE role='admin' AND active AND id<>$1", [u.id]);
+      if (!others) throw bad('É preciso manter pelo menos um administrador ativo');
+    }
+    await db.query('UPDATE users SET name=$1, email=$2, phone=$3, active=$4, role=$5 WHERE id=$6', [str(b.name ?? u.name, 120) || u.name, email, str(b.phone ?? u.phone, 30), active, role, u.id]);
     if (b.password) {
       if (String(b.password).length < 6) throw bad('A senha deve ter pelo menos 6 caracteres');
       await db.query('UPDATE users SET password_hash=$1 WHERE id=$2', [auth.hashPassword(b.password), u.id]);
