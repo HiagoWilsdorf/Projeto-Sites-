@@ -202,7 +202,10 @@ async function router() {
   shell();
   const key = path.split('/')[1] || 'dashboard';
   for (const a of $$('[data-nav]')) a.classList.toggle('active', a.dataset.nav === key || (a.dataset.nav === 'mais' && MORE_KEYS.includes(key) && !!a.closest('.mobile-nav')));
-  const main = $('#main');
+  // Cada navegação ganha um <main> novo: telas antigas ainda carregando escrevem num elemento descartado.
+  const old = $('#main');
+  const main = old.cloneNode(false);
+  old.replaceWith(main);
   for (const [re, fn] of routes) {
     const m = path.match(re);
     if (m) {
