@@ -38,6 +38,14 @@ Em **Configurações → WhatsApp desta conta**: Z-API ou Evolution API (conexã
 
 > No plano Hobby da Vercel o agendador roda 1 vez por dia e o uso comercial não é permitido pelos termos da Vercel; para operação comercial use o plano Pro.
 
+## Backup diário
+
+- Todo dia às 03:00 (Brasília) o cron `/api/cron/backup` grava uma cópia **completa** do banco, compactada e **criptografada (AES-256-GCM)**, num Vercel Blob privado **separado** (`gestao-emprestimos-backups`, região iad1 — outra região que a do sistema). Cada cópia fica 90 dias.
+- Os documentos (fotos, vídeos, PDFs) são copiados para o mesmo armazenamento de backup em `files/` (incremental: só os novos).
+- Variáveis: `BACKUP_READ_WRITE_TOKEN` (armazenamento de backup) e `BACKUP_ENCRYPTION_KEY` (chave). **Guarde a chave fora da Vercel** — sem ela os backups não abrem.
+- No painel (Configurações → Backups de segurança) a conta administradora vê o status, faz backup na hora e baixa as cópias. O painel avisa se o backup falhar ou atrasar.
+- Restaurar: `DATABASE_URL=... BACKUP_ENCRYPTION_KEY=... BACKUP_READ_WRITE_TOKEN=... node scripts/restore-backup.js --ultimo` (mostra o conteúdo) e repetir com `--confirmar` para substituir os dados.
+
 ## Desenvolvimento local
 
 ```bash

@@ -264,3 +264,71 @@ test('cron da Vercel exige o segredo', async () => {
     assert.strictEqual(ok.data.created, 0);
   } finally { delete process.env.CRON_SECRET; await t.close(); }
 });
+
+test('backup diário criptografado: gera, copia documentos e restaura tudo', async () => {
+  const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bkp-'));
+  const docsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-'));
+  process.env.BACKUP_ENCRYPTION_KEY = require('node:crypto').randomBytes(32).toString('base64');
+  process.env.CRON_SECRET = 'segredo-cron';
+  const backup = require('../src/backup');
+  const db = await connect({ url: '', dir: '' });
+  const app = createApp({ db, storage: createStorage({ dir: docsDir }), backupDir });
+  const server = await new Promise((r) => { const s = app.listen(0, () => r(s)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let cookie = '';
+  const call = async (method, url, body, headers = {}) => {
+    const isBuf = Buffer.isBuffer(body);
+    const res = await fetch(base + url, { method, headers: { ...(isBuf ? {} : { 'Content-Type': 'application/json' }), cookie, ...headers }, body: body == null ? undefined : isBuf ? body : JSON.stringify(body) });
+    const sc = res.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0];
+    const ct = res.headers.get('content-type') || '';
+    return { status: res.status, data: ct.includes('json') ? await res.json() : Buffer.from(await res.arrayBuffer()) };
+  };
+  try {
+    await call('POST', '/api/auth/setup', { name: 'Central', email: 'c@x.com', password: 'segredo1' });
+    await call('POST', '/api/loans', { new_client: { name: 'Maria', phone: '11988887777', document: '111' }, principal_cents: 100000, interest_rate: 10, method: 'simple', frequency: 'monthly', installments_count: 3 });
+    const link = (await call('POST', '/api/applications', { phone: '11977776666', name: 'Ana' })).data.link;
+    const token = new URL(link).searchParams.get('t');
+    const types = (await call('GET', `/api/public/apply/${token}`)).data.document_types;
+    await call('PUT', `/api/public/apply/${token}/upload-local?type=${types[0].id}&name=a.jpg`, Buffer.from('foto-rg'), { 'Content-Type': 'image/jpeg' });
+
+    // Cron protegido
+    assert.strictEqual((await call('GET', '/api/cron/backup')).status, 401);
+    const run = await call('GET', '/api/cron/backup', null, { Authorization: 'Bearer segredo-cron' });
+    assert.strictEqual(run.status, 200, JSON.stringify(run.data));
+    assert.strictEqual(run.data.encrypted, true);
+    assert.strictEqual(run.data.files_copied, 1);
+    assert.strictEqual(run.data.counts.clients, 1);
+    // Segunda execução não copia o mesmo documento de novo
+    assert.strictEqual((await call('POST', '/api/backups/run')).data.files_copied, 0);
+
+    // O arquivo está criptografado (não contém o nome do cliente em texto)
+    const list = (await call('GET', '/api/backups')).data;
+    assert.ok(list.list.length >= 2 && list.last.ok);
+    const raw = fs.readFileSync(path.join(backupDir, list.list[0].pathname));
+    assert.ok(!raw.includes(Buffer.from('Maria')));
+    assert.ok(fs.existsSync(path.join(backupDir, 'files')));
+    const json = await call('GET', `/api/backups/download?pathname=${encodeURIComponent(list.list[0].pathname)}&format=json`);
+    assert.strictEqual(json.data.tables.clients[0].name, 'Maria');
+
+    // Desastre: apaga dados e restaura do backup
+    const snapshot = backup.open(raw);
+    await db.query('DELETE FROM payments'); await db.query('DELETE FROM loans'); await db.query('DELETE FROM messages'); await db.query('DELETE FROM clients');
+    assert.strictEqual(await db.val('SELECT COUNT(*)::int FROM clients'), 0);
+    await backup.restore(db, snapshot);
+    assert.strictEqual(await db.val('SELECT COUNT(*)::int FROM clients'), 1);
+    assert.strictEqual(await db.val('SELECT COUNT(*)::int FROM installments'), 3);
+    assert.strictEqual(await db.val('SELECT COUNT(*)::int FROM users'), 1);
+    // depois de restaurar, o sistema continua funcionando (login e novos registros)
+    const again = await call('POST', '/api/auth/login', { email: 'c@x.com', password: 'segredo1' });
+    assert.strictEqual(again.status, 200);
+    const l2 = await call('POST', '/api/loans', { new_client: { name: 'Novo', phone: '11900000000' }, principal_cents: 5000, interest_rate: 1, method: 'simple', frequency: 'monthly', installments_count: 1 });
+    assert.strictEqual(l2.status, 201, JSON.stringify(l2.data));
+
+    // Chave errada não abre o backup
+    process.env.BACKUP_ENCRYPTION_KEY = require('node:crypto').randomBytes(32).toString('base64');
+    assert.throws(() => backup.open(raw));
+  } finally {
+    delete process.env.BACKUP_ENCRYPTION_KEY; delete process.env.CRON_SECRET;
+    server.close(); await db.close();
+  }
+});

@@ -29,6 +29,11 @@ function createStorage({ dir } = {}) {
         Readable.fromWeb(r.stream).pipe(res);
       },
       async remove(pathname) { try { await blob.del(pathname); } catch { /* ignore */ } },
+      async readBuffer(pathname) {
+        const r = await blob.get(pathname, { access: 'private' });
+        if (!r || r.statusCode !== 200) throw new Error('Arquivo não encontrado');
+        return Buffer.from(await new Response(r.stream).arrayBuffer());
+      },
     };
   }
   const root = dir || path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'uploads');
@@ -57,6 +62,7 @@ function createStorage({ dir } = {}) {
       fs.createReadStream(full).pipe(res);
     },
     async remove(pathname) { try { fs.rmSync(safe(pathname), { force: true }); } catch { /* ignore */ } },
+    async readBuffer(pathname) { return fs.readFileSync(safe(pathname)); },
   };
 }
 

@@ -403,6 +403,8 @@ async function pageDashboard(main) {
     <div class="page-head"><div><h1>Painel${getScope() ? ` — ${esc(accountName(getScope()))}` : isAdmin() ? ' — todas as contas' : ''}</h1><div class="muted small">Hoje, ${dateBR(d.today)}</div></div>
       <div class="actions"><a class="btn primary" href="#/emprestimos/novo">+ Novo cliente / empréstimo</a></div></div>
     <div id="wa-status"></div>
+    ${t.backup !== undefined && (!t.backup || !t.backup.ok || Date.now() - new Date(t.backup.at).getTime() > 36 * 3600000) ? `<div class="card wa-banner danger"><div><strong>${!t.backup ? 'Nenhum backup feito ainda.' : !t.backup.ok ? 'O último backup falhou.' : 'O backup diário está atrasado.'}</strong>
+      <div class="small muted">${t.backup?.error ? esc(t.backup.error) : 'Os dados precisam de cópia de segurança diária.'}</div></div><a class="btn" href="#/config">Ver backups</a></div>` : ''}
     <div class="kpis">
       <div class="kpi primary"><div class="label">A receber</div><div class="value">${brl(t.receivable)}</div><div class="sub">${t.active_loans} empréstimo(s) ativo(s)</div></div>
       <div class="kpi"><div class="label">Capital na rua</div><div class="value">${brl(t.principal_out)}</div><div class="sub">principal ainda não recuperado</div></div>
@@ -1268,7 +1270,9 @@ async function pageSettings(main, query) {
     <div class="card save-bar"><button class="btn primary">Salvar sistema</button></div>
     </form>
     <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Documentos exigidos no cadastro</h2><button class="btn sm primary" id="new-doc">+ Documento</button></div>
-      <div id="doc-list"></div></div>` : ''}
+      <div id="doc-list"></div></div>
+    <div class="card"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">Backups de segurança</h2><button class="btn sm primary" id="run-backup">Fazer backup agora</button></div>
+      <div id="backup-box"><span class="muted small">Carregando…</span></div></div>` : ''}
     <form class="card" id="pw-form" style="margin-top:16px"><h2>Alterar minha senha</h2><div class="form-grid">
       <div class="field"><label>Senha atual</label><input type="password" name="current" required autocomplete="current-password"></div>
       <div class="field"><label>Nova senha</label><input type="password" name="password" required minlength="6" autocomplete="new-password"></div></div>
@@ -1340,6 +1344,26 @@ async function pageSettings(main, query) {
       for (const b of $$('[data-del-doc]', main)) b.onclick = async () => { if (await confirmDialog('Remover este documento da lista exigida?', 'Remover')) guard(async () => { await api('DELETE', `/document-types/${b.dataset.delDoc}`); renderDocs(); }); };
     };
     renderDocs();
+    const renderBackups = async () => {
+      const box = $('#backup-box');
+      if (!box) return;
+      const b = await api('GET', '/backups');
+      const last = b.last;
+      const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+      box.innerHTML = `<p class="small muted" style="margin-top:0">Todo dia às 03:00 é feita uma cópia completa do banco de dados (${b.encrypted ? 'criptografada' : '<strong style="color:var(--danger)">sem criptografia — configure a chave</strong>'}) e dos documentos novos, guardada em um armazenamento separado, em outra região. Cada cópia fica disponível por ${b.retention_days} dias.</p>
+        ${last ? `<div class="summary-row"><span>Último backup</span><span>${last.ok ? '<span class="badge ok">OK</span>' : '<span class="badge danger">Falhou</span>'} ${dateTimeBR(last.at)}</span></div>
+          ${last.ok ? `<div class="summary-row"><span>Conteúdo</span><span class="small">${last.counts?.clients ?? 0} clientes · ${last.counts?.loans ?? 0} empréstimos · ${last.counts?.applications ?? 0} cadastros · ${last.files_copied} documento(s) novo(s) copiado(s)</span></div>` : `<div class="small" style="color:var(--danger)">${esc(last.error || `${last.files_failed} documento(s) não copiados`)}</div>`}` : '<div class="empty small">Nenhum backup feito ainda.</div>'}
+        ${b.error ? `<div class="small" style="color:var(--danger)">${esc(b.error)}</div>` : ''}
+        ${b.list.length ? `<details style="margin-top:10px"><summary class="small"><strong>Cópias disponíveis (${b.list.length})</strong></summary>${b.list.slice(0, 30).map((x) => `<div class="list-item"><div class="main"><strong class="small">${dateTimeBR(x.uploaded_at)}</strong><span class="small muted">${fmtSize(x.size)}</span></div>
+          <div class="btn-row"><a class="btn sm" href="/api/backups/download?pathname=${encodeURIComponent(x.pathname)}" title="Arquivo criptografado">⬇ Criptografado</a><a class="btn sm" href="/api/backups/download?pathname=${encodeURIComponent(x.pathname)}&format=json" title="Contém dados sensíveis">⬇ Legível (JSON)</a></div></div>`).join('')}</details>` : ''}`;
+    };
+    $('#run-backup').onclick = (e) => guard(async () => {
+      toast('Fazendo backup…');
+      const r = await api('POST', '/backups/run');
+      toast(r.ok ? `Backup concluído (${r.files_copied} documento(s) novo(s) copiado(s))` : 'Backup falhou: ' + (r.error || 'documentos não copiados'), r.ok ? '' : 'error');
+      renderBackups();
+    }, e.target);
+    renderBackups().catch((err) => { $('#backup-box').innerHTML = `<div class="small" style="color:var(--danger)">${esc(err.message)}</div>`; });
   }
   $('#pw-form').onsubmit = (e) => { e.preventDefault(); guard(async () => { await api('POST', '/auth/password', formData(e.target)); e.target.reset(); toast('Senha alterada'); }, e.submitter); };
 }

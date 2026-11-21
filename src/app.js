@@ -6,6 +6,7 @@ const M = require('./messaging');
 const auth = require('./auth');
 const { runAutomations } = require('./scheduler');
 const { createStorage, LIMITS } = require('./storage');
+const backup = require('./backup');
 
 const SECRET_KEYS = ['wa_cloud_token', 'wa_evolution_apikey', 'wa_zapi_token', 'wa_zapi_client_token'];
 const MASK = '••••••••';
@@ -117,6 +118,13 @@ function createApp(opts = {}) {
     const secret = process.env.CRON_SECRET;
     if (!secret || req.headers.authorization !== `Bearer ${secret}`) return res.sendStatus(401);
     res.json(await runAutomations(db, { force: true }));
+  });
+
+  app.get('/api/cron/backup', async (req, res) => {
+    const secret = process.env.CRON_SECRET;
+    if (!secret || req.headers.authorization !== `Bearer ${secret}`) return res.sendStatus(401);
+    const r = await backup.runBackup(db, { storage, dir: opts.backupDir });
+    res.status(r.ok ? 200 : 500).json(r);
   });
 
   // ===================== Cadastro público (link enviado ao cliente) =====================
@@ -472,6 +480,7 @@ function createApp(opts = {}) {
         unread_inbound: await db.val(`SELECT COUNT(*)::int FROM messages WHERE ${wm} AND direction='in' AND status='received'`, pm),
         applications_review: await db.val(`SELECT COUNT(*)::int FROM applications WHERE ${wm} AND status='submitted'`, pm),
         applications_open: await db.val(`SELECT COUNT(*)::int FROM applications WHERE ${wm} AND status IN ('pending','needs_changes')`, pm),
+        backup: isAdmin(req) ? await backup.lastStatus(db) : undefined,
       },
       overdue: overdue.slice(0, 20).map(tag),
       upcoming: upcoming.slice(0, 20).map(tag),
@@ -1065,6 +1074,34 @@ function createApp(opts = {}) {
     await db.query('DELETE FROM applications WHERE id=$1', [a.id]);
     for (const f of files) await storage.remove(f.pathname);
     res.json({ ok: true });
+  });
+
+  // ---------- Backups (somente administradores) ----------
+  api.get('/backups', async (req, res) => {
+    adminOnly(req);
+    let list = [];
+    let error = null;
+    try { list = (await backup.listBackups({ dir: opts.backupDir })).slice(0, 120); } catch (e) { error = e.message; }
+    res.json({ last: await backup.lastStatus(db), list, error, encrypted: !!process.env.BACKUP_ENCRYPTION_KEY, retention_days: 90 });
+  });
+  api.post('/backups/run', async (req, res) => {
+    adminOnly(req);
+    res.json(await backup.runBackup(db, { storage, dir: opts.backupDir }));
+  });
+  api.get('/backups/download', async (req, res) => {
+    adminOnly(req);
+    const pathname = String(req.query.pathname || '');
+    if (!/^db\/[\w.\-/]+$/.test(pathname) || pathname.includes('..')) throw bad('Backup inválido');
+    const buf = await backup.target({ dir: opts.backupDir }).read(pathname);
+    const name = pathname.split('/').pop();
+    if (req.query.format === 'json') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/\.gz(\.enc)?$/, '')}"`);
+      return res.send(JSON.stringify(backup.open(buf)));
+    }
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.send(buf);
   });
 
   // ---------- Relatórios ----------
