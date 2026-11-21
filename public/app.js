@@ -137,6 +137,23 @@ const MOBILE_NAV = ['dashboard', 'cadastros', 'cobrancas', 'clientes', 'mais'];
 const MORE_KEYS = ['emprestimos', 'mensagens', 'afiliados', 'automacoes', 'relatorios', 'config', 'mais'];
 let badges = { cadastros: 0, cobrancas: 0, mensagens: 0 };
 
+// Ícones em traço (iguais em qualquer aparelho, ao contrário de emojis).
+const ICON_PATHS = {
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+  cadastros: '<path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/>',
+  cobrancas: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  clientes: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  emprestimos: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
+  mensagens: '<path d="M21 11.5a8.4 8.4 0 0 1-9 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3a8.4 8.4 0 0 1 8.5 8.5z"/>',
+  afiliados: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
+  automacoes: '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+  relatorios: '<path d="M3 3v18h18"/><path d="M8 17v-5M13 17V8M18 17v-9"/>',
+  config: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  mais: '<path d="M3 12h18M3 6h18M3 18h18"/>',
+  sair: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
+};
+const icon = (k) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[k] || ''}</svg>`;
+
 function shell() {
   if ($('#main')) return;
   const scopeSel = isAdmin() ? `<div class="scope-box"><label>Visualizando</label><select class="scope-select">
@@ -145,13 +162,18 @@ function shell() {
     <aside class="sidebar">
       <div class="brand"><div class="brand-logo">R$</div><span id="brand-name">${esc(SYSTEM_NAME)}</span></div>
       ${scopeSel}
-      <nav class="nav">${navItems().map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
+      <nav class="nav">${navItems().map(([k, , t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${icon(k)}</span>${t}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
       <div class="spacer"></div>
       <div class="me-box"><strong>${esc(ME.name)}</strong><span class="small muted">${isAdmin() ? 'Administrador (acesso total)' : 'Afiliado'}</span></div>
       <a class="btn sm" href="#" id="logout">Sair</a>
     </aside>
+    <header class="mobile-top">
+      <div class="brand-logo">R$</div>
+      <div class="mt-title"><strong>${esc(SYSTEM_NAME)}</strong><span>${esc(ME.name)}</span></div>
+      ${isAdmin() ? `<select class="scope-select mt-scope" aria-label="Conta visualizada"><option value="">Todas as contas</option>${ACCOUNTS.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>` : ''}
+    </header>
     <main id="main"></main>
-    <nav class="mobile-nav">${[...navItems(), ['mais', '☰', 'Mais']].filter(([k]) => MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${i}</span>${t.split(' ')[0]}<span class="badge count" data-badge="${k}" hidden></span></a>`).join('')}</nav>
+    <nav class="mobile-nav">${[...navItems(), ['mais', '', 'Mais']].filter(([k]) => MOBILE_NAV.includes(k)).map(([k, , t]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${icon(k)}<span class="badge count" data-badge="${k}" hidden></span></span><span class="lbl">${t.split(' ')[0]}</span></a>`).join('')}</nav>
   </div>`;
   for (const sel of $$('.scope-select')) {
     sel.value = getScope();
@@ -249,10 +271,9 @@ async function start() {
   ME = me.user;
   ACCOUNTS = me.accounts || [];
   if (getScope() && !ACCOUNTS.some((a) => String(a.id) === getScope())) setScope('');
+  SYSTEM_NAME = me.system_name || 'Empréstimos';
   $('#app').innerHTML = '';
   shell();
-  SYSTEM_NAME = me.system_name || 'Empréstimos';
-  $('#brand-name').textContent = SYSTEM_NAME;
   document.title = me.system_name || document.title;
   refreshBadges();
   router();
@@ -270,6 +291,38 @@ async function reloadAccounts() {
   const box = $('.scope-select');
   if (box) { $('#app').innerHTML = ''; shell(); refreshBadges(); }
 }
+
+// No celular, tabelas viram cartões: cada célula ganha o nome da coluna como rótulo.
+function cardifyTables(root = document) {
+  for (const t of root.querySelectorAll('main table:not(.compact)')) {
+    if (t.dataset.cards === '1') continue;
+    t.dataset.cards = '1';
+    t.classList.add('rtable');
+    const heads = [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    for (const tr of t.querySelectorAll('tbody tr')) {
+      [...tr.children].forEach((td, i) => {
+        if (td.querySelector('.btn-row, .btn') && !heads[i]) td.classList.add('cell-actions');
+        else if (heads[i]) {
+          td.dataset.label = heads[i];
+          // o conteúdo da célula fica junto, à direita do rótulo
+          if (i > 0 && !td.querySelector(':scope > .cv')) {
+            const wrap = document.createElement('span');
+            wrap.className = 'cv';
+            while (td.firstChild) wrap.appendChild(td.firstChild);
+            td.appendChild(wrap);
+          }
+        }
+        if (!td.textContent.trim() && !td.querySelector('.btn, img')) td.classList.add('cell-empty');
+      });
+    }
+  }
+}
+let cardifyQueued = false;
+new MutationObserver(() => {
+  if (cardifyQueued) return;
+  cardifyQueued = true;
+  requestAnimationFrame(() => { cardifyQueued = false; cardifyTables(); });
+}).observe(document.getElementById('app'), { childList: true, subtree: true });
 
 window.addEventListener('hashchange', router);
 setInterval(() => { if (ME) refreshBadges(); }, 60000);
@@ -643,8 +696,8 @@ async function pageLoans(main, query) {
   main.innerHTML = `<div class="page-head"><div><h1>Empréstimos</h1><div class="muted small">${list.length} registro(s) · saldo ${brl(list.reduce((s, l) => s + l.balance_cents, 0))}</div></div>
     <div class="actions"><a class="btn primary" href="#/emprestimos/novo">+ Novo empréstimo</a></div></div>
     <div class="tabs">${[['active', 'Ativos'], ['paid', 'Quitados'], ['canceled', 'Cancelados'], ['all', 'Todos']].map(([k, t]) => `<button data-st="${k}" class="${k === status ? 'active' : ''}">${t}</button>`).join('')}</div>
-    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>Cliente</th>${showAccountCol() ? '<th>Conta</th>' : ''}<th>Data</th><th class="right">Emprestado</th><th>Condições</th><th>Progresso</th><th class="right">Saldo</th><th>Status</th></tr></thead><tbody>
-    ${list.map((l) => `<tr class="click" data-id="${l.id}"><td>${l.id}</td><td><strong>${esc(l.client_name)}</strong></td>${showAccountCol() ? `<td class="small">${esc(l.account_name || '')}</td>` : ''}<td class="nowrap">${dateBR(l.start_date)}</td>
+    <div class="card">${list.length ? `<div class="table-wrap"><table><thead><tr><th>Cliente</th><th>Nº</th>${showAccountCol() ? '<th>Conta</th>' : ''}<th>Data</th><th class="right">Emprestado</th><th>Condições</th><th>Progresso</th><th class="right">Saldo</th><th>Status</th></tr></thead><tbody>
+    ${list.map((l) => `<tr class="click" data-id="${l.id}"><td><strong>${esc(l.client_name)}</strong></td><td>#${l.id}</td>${showAccountCol() ? `<td class="small">${esc(l.account_name || '')}</td>` : ''}<td class="nowrap">${dateBR(l.start_date)}</td>
       <td class="num right">${brl(l.principal_cents)}</td><td class="small">${l.installments_count}x ${FREQ[l.frequency].toLowerCase()} · ${String(l.interest_rate).replace('.', ',')}%</td>
       <td style="min-width:110px"><div class="small muted">${l.paid_count}/${l.installments_count}</div><div class="progress"><div style="width:${(l.paid_count / l.installments_count) * 100}%"></div></div></td>
       <td class="num right"><strong>${brl(l.balance_cents)}</strong></td>
@@ -715,7 +768,7 @@ async function pageNewLoan(main, query) {
           <div class="summary-row"><span>Valor emprestado</span><strong class="num">${brl(p.principal_cents)}</strong></div>
           <div class="summary-row"><span>Juros totais</span><strong class="num">${brl(s.interest_cents)}</strong></div>
           <div class="summary-row"><span>Total a receber</span><strong class="num" style="color:var(--primary)">${brl(s.total_cents)}</strong></div>
-          <div class="table-wrap" style="margin-top:10px;max-height:420px;overflow:auto"><table><thead><tr><th>#</th><th>Vencimento</th><th class="right">Juros</th><th class="right">Amortização</th><th class="right">Parcela</th></tr></thead>
+          <div class="table-wrap" style="margin-top:10px;max-height:420px;overflow:auto"><table class="compact"><thead><tr><th>#</th><th>Vencimento</th><th class="right">Juros</th><th class="right">Amortização</th><th class="right">Parcela</th></tr></thead>
           <tbody>${s.installments.map((r) => `<tr><td>${r.number}</td><td>${dateBR(r.due_date)}</td><td class="num right">${brl(r.interest_cents)}</td><td class="num right">${brl(r.principal_cents)}</td><td class="num right"><strong>${brl(r.amount_cents)}</strong></td></tr>`).join('')}</tbody></table></div>`;
       } catch (e) { if ($('#sim')) $('#sim').innerHTML = `<h2>Simulação</h2><div class="empty">${esc(e.message)}</div>`; }
     }, 250);
@@ -773,8 +826,8 @@ async function pageLoan(main, id) {
       <div class="kpi ok"><div class="label">Recebido</div><div class="value">${brl(l.paid_cents)}</div><div class="sub">${l.paid_count}/${l.installments_count} parcelas</div></div>
       <div class="kpi primary"><div class="label">Saldo devedor</div><div class="value">${brl(l.balance_cents)}</div>${l.overdue_cents ? `<div class="sub" style="color:var(--danger)">${brl(l.overdue_cents)} em atraso</div>` : ''}</div>
     </div>
-    <div class="card"><h2>Parcelas</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Vencimento</th><th class="right">Valor</th><th class="right">Pago</th><th class="right">Devido hoje</th><th>Situação</th><th></th></tr></thead><tbody>
-      ${items.map((i) => `<tr><td>${i.number}</td><td class="nowrap">${dateBR(i.due_date)}${i.paid_at ? `<div class="small muted">pago ${dateBR(i.paid_at)}</div>` : ''}</td>
+    <div class="card"><h2>Parcelas</h2><div class="table-wrap"><table><thead><tr><th>Parcela</th><th>Vencimento</th><th class="right">Valor</th><th class="right">Pago</th><th class="right">Devido hoje</th><th>Situação</th><th></th></tr></thead><tbody>
+      ${items.map((i) => `<tr><td><strong>${i.number}/${l.installments_count}</strong></td><td class="nowrap">${dateBR(i.due_date)}${i.paid_at ? `<div class="small muted">pago ${dateBR(i.paid_at)}</div>` : ''}</td>
         <td class="num right">${brl(i.amount_cents)}</td><td class="num right">${brl(i.paid_cents)}</td>
         <td class="num right">${i.status === 'open' ? `<strong>${brl(i.remaining_cents)}</strong>${i.current_penalty_cents ? `<div class="small muted">+${brl(i.current_penalty_cents)} encargos</div>` : ''}` : '—'}</td>
         <td>${situationBadge(i)}</td>
@@ -1179,9 +1232,9 @@ async function pageAccounts(main) {
 }
 
 function pageMore(main) {
-  main.innerHTML = `<div class="page-head"><h1>Mais</h1></div>${isAdmin() ? `<div class="card"><label>Visualizando</label><select class="scope-select"><option value="">🌐 Todas as contas</option>${ACCOUNTS.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>` : ''}
-    <div class="card">${navItems().filter(([k]) => !MOBILE_NAV.includes(k)).map(([k, i, t]) => `<a class="list-item" href="#/${k}" style="color:var(--text)"><span>${i} ${t}</span><span class="muted">›</span></a>`).join('')}
-    <a class="list-item" href="#" id="logout-m" style="color:var(--danger)"><span>Sair (${esc(ME.name)})</span></a></div>`;
+  main.innerHTML = `<div class="page-head"><h1>Mais</h1></div>${isAdmin() ? `<div class="card hide-mobile"><label>Visualizando</label><select class="scope-select"><option value="">🌐 Todas as contas</option>${ACCOUNTS.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>` : ''}
+    <div class="card menu-list">${navItems().filter(([k]) => !MOBILE_NAV.includes(k)).map(([k, , t]) => `<a class="list-item" href="#/${k}"><span class="mi">${icon(k)}<span>${t}</span></span><span class="muted">›</span></a>`).join('')}
+    <a class="list-item" href="#" id="logout-m" style="color:var(--danger)"><span class="mi">${icon('sair')}<span>Sair (${esc(ME.name)})</span></span></a></div>`;
   for (const sel of $$('.scope-select', main)) { sel.value = getScope(); sel.onchange = () => { setScope(sel.value); for (const o of $$('.scope-select')) o.value = sel.value; refreshBadges(); toast('Conta alterada'); }; }
   $('#logout-m').onclick = async (e) => { e.preventDefault(); await logout(); };
 }
