@@ -42,9 +42,6 @@ function createApp(opts = {}) {
   const pub = path.join(__dirname, '..', 'public');
   app.use(express.json({ limit: '256kb' }));
 
-  // Conecta o banco sob demanda (serverless) apenas nas rotas de API.
-  app.use('/api', async (req, res, next) => { try { db = await getDb(); next(); } catch (e) { next(e); } });
-
   const isExpired = (c) => new Date(c.expires_at).getTime() < Date.now();
 
   function view(c) {
@@ -68,6 +65,9 @@ function createApp(opts = {}) {
   });
   app.post('/api/logout', (req, res) => { auth.clearSession(res); res.json({ ok: true }); });
   app.get('/api/me', (req, res) => res.json({ app_name: APP_NAME(), authenticated: auth.isAuthed(req), configured: !!process.env.ADMIN_PASSWORD }));
+
+  // Conecta o banco sob demanda (serverless). Login/me/logout acima não dependem do banco.
+  app.use('/api', async (req, res, next) => { try { db = await getDb(); next(); } catch (e) { next(e); } });
 
   // ===================== Página pública do destinatário =====================
   async function check(token) {
@@ -157,4 +157,10 @@ function createApp(opts = {}) {
   return app;
 }
 
-module.exports = { createApp, waLink, siteUrl };
+// Exporta uma instância pronta como export padrão (requisito do runtime de função da Vercel),
+// mantendo createApp/waLink/siteUrl como propriedades para uso local e nos testes.
+const app = createApp();
+app.createApp = createApp;
+app.waLink = waLink;
+app.siteUrl = siteUrl;
+module.exports = app;
