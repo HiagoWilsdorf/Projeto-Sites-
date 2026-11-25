@@ -35,7 +35,7 @@ function done(app, name, status) {
 // ---------- Compartilhamento em tempo real ----------
 let watchId = null;
 let lastSent = 0;
-const SEND_EVERY = 15000; // envia no máximo a cada 15s
+const SEND_EVERY = 5000; // envia no máximo a cada 5s
 
 function stopLive(silent) {
   if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }

@@ -123,7 +123,7 @@ async function dashboard() {
 
   // Atualiza o histórico periodicamente para refletir a localização ao vivo.
   stopAutoRefresh();
-  liveTimer = setInterval(dashboardRefreshList, 15000);
+  liveTimer = setInterval(dashboardRefreshList, 5000);
 
   $('#logout').onclick = async () => { stopAutoRefresh(); await api('POST', '/api/logout'); loginScreen(); };
   $('#new').onsubmit = async (e) => {
