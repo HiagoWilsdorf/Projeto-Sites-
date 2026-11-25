@@ -340,12 +340,16 @@ test('verificação de localização: só registra com consentimento do cliente'
     await admin('POST', '/api/auth/setup', { name: 'Central', email: 'c@x.com', password: 'segredo1' });
     const c = (await admin('POST', '/api/clients', { name: 'Maria Souza', phone: '11988887777', address: 'Rua A, 100 - São Paulo' })).data;
 
-    // Gera o link de verificação
+    // Gera o link e envia pelo WhatsApp (provedor manual → fica pronto para envio)
     const gen = await admin('POST', `/api/clients/${c.id}/location-check`, { purpose: 'Confirmar endereço', hours: 24 });
     assert.strictEqual(gen.status, 201, JSON.stringify(gen.data));
     assert.match(gen.data.url, /\/local\.html\?t=/);
+    assert.strictEqual(gen.data.sent, 'pending_manual');
     assert.ok(gen.data.wa_link.includes('wa.me'));
     const token = gen.data.url.split('t=')[1];
+    // A mensagem com o link entrou no histórico do WhatsApp
+    const sentMsg = (await admin('GET', `/api/clients/${c.id}`)).data.messages.find((m) => m.kind === 'location_link');
+    assert.ok(sentMsg && sentMsg.body.includes(token), 'link enviado registrado no histórico');
 
     // Página pública: pendente
     const anon = t.browser();

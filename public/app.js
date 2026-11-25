@@ -700,13 +700,14 @@ function locationCard(c) {
 
 function locationDialog(c, reload) {
   modal('Verificar localização do cliente', `
-    <p class="small muted">O cliente receberá um link. Ao abrir, ele verá um aviso e precisa <strong>autorizar</strong> antes de qualquer registro. O GPS preciso depende da permissão no navegador dele.</p>
+    <p class="small muted">O link é enviado pelo <strong>WhatsApp conectado</strong> da sua conta. Ao abrir, o cliente vê um aviso e precisa <strong>autorizar</strong> antes de qualquer registro. O GPS preciso depende da permissão no navegador dele.</p>
     <form id="loc-form">
       <label>Mensagem/motivo mostrado ao cliente (opcional)
         <input name="purpose" maxlength="300" placeholder="Ex.: Confirmação de endereço para liberação do empréstimo"></label>
       <label>Validade do link
         <select name="hours"><option value="24">24 horas</option><option value="2">2 horas</option><option value="48">48 horas</option><option value="168">7 dias</option></select></label>
-      <div class="modal-foot"><button type="button" class="btn" data-close-x>Cancelar</button><button class="btn primary">Gerar link</button></div>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="send" checked> Enviar pelo WhatsApp agora${c.phone ? '' : ' <span class="small muted">(cliente sem telefone)</span>'}</label>
+      <div class="modal-foot"><button type="button" class="btn" data-close-x>Cancelar</button><button class="btn primary">Gerar e enviar</button></div>
     </form>
     <div id="loc-result" hidden></div>`, {
     onMount: (m, close) => {
@@ -715,14 +716,20 @@ function locationDialog(c, reload) {
         e.preventDefault();
         guard(async () => {
           const f = formData(e.target);
-          const r = await api('POST', `/clients/${c.id}/location-check`, { purpose: f.purpose, hours: Number(f.hours) });
+          const r = await api('POST', `/clients/${c.id}/location-check`, { purpose: f.purpose, hours: Number(f.hours), send: f.send });
           const box = m.querySelector('#loc-result');
           m.querySelector('#loc-form').hidden = true;
           box.hidden = false;
-          box.innerHTML = `<p class="small">Link gerado. Envie ao cliente:</p>
+          const status = {
+            sent: '<p class="small" style="color:var(--ok)">✅ Enviado pelo WhatsApp para o cliente.</p>',
+            pending_manual: '<p class="small">Seu WhatsApp está no modo manual — toque para enviar:</p>',
+            not_sent: '<p class="small">Link gerado. Envie ao cliente:</p>',
+            failed: `<p class="small" style="color:var(--danger)">Não deu para enviar automaticamente${r.send_error ? ' (' + esc(r.send_error) + ')' : ''}. Envie manualmente:</p>`,
+          }[r.sent] || '<p class="small">Link gerado:</p>';
+          box.innerHTML = `${status}
             <input value="${esc(r.url)}" readonly style="width:100%;margin-bottom:8px" onclick="this.select()">
             <div class="btn-row">
-              ${r.wa_link ? `<a class="btn wa" href="${esc(r.wa_link)}" target="_blank" rel="noopener">Enviar no WhatsApp</a>` : ''}
+              ${r.wa_link && r.sent !== 'sent' ? `<a class="btn wa" href="${esc(r.wa_link)}" target="_blank" rel="noopener">Enviar no WhatsApp</a>` : ''}
               <button class="btn" data-copy-link>Copiar link</button>
               <button class="btn primary" data-done>Concluir</button>
             </div>`;

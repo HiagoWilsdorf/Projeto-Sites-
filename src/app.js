@@ -648,20 +648,33 @@ function createApp(opts = {}) {
     res.status(201).json({ ok: true });
   });
 
-  // Gera um link de verificação de localização e a mensagem de WhatsApp para enviar ao cliente.
+  // Gera o link de verificação e o ENVIA pela conexão de WhatsApp da conta
+  // (Cloud API / Evolution / Z-API). No modo manual, devolve o link pronto para enviar.
   api.post('/clients/:id/location-check', async (req, res) => {
     const c = await clientFor(req, req.params.id);
     const hours = Math.min(168, Math.max(1, int(req.body?.hours, 24)));
     const purpose = str(req.body?.purpose, 300) || null;
+    const send = req.body?.send !== false; // por padrão, dispara pelo WhatsApp
+    const s = await DB.accountSettings(db, c.owner_id);
     const l = await db.one(`INSERT INTO location_checks(owner_id, client_id, token, purpose, expected_address, expires_at)
       VALUES ($1,$2,$3,$4,$5, now() + ($6::int * interval '1 hour')) RETURNING *`,
     [c.owner_id, c.id, DB.randomToken(16), purpose, c.address || null, hours]);
-    const s = await DB.accountSettings(db, c.owner_id);
     const url = `${M.siteUrl(baseUrl(req))}/local.html?t=${l.token}`;
     const first = String(c.name || '').trim().split(/\s+/)[0] || '';
-    const msg = `Olá ${first}! Para confirmarmos seus dados, abra o link abaixo e autorize a verificação de localização (leva alguns segundos):\n${url}\n\n${s.business_name}`;
-    await logNote(db, { ownerId: c.owner_id, clientId: c.id, kind: 'location', body: `🔗 Link de verificação de localização gerado (válido por ${hours}h).` });
-    res.status(201).json({ ...locationView(l), url, message: msg, wa_link: c.phone ? M.waLink(c.phone, msg, s.default_country_code) : null });
+    const body = `Olá ${first}! ${purpose ? purpose + '\n\n' : ''}Para confirmarmos seus dados, abra o link abaixo e autorize a verificação da sua localização (leva alguns segundos):\n${url}\n\n${s.business_name}`;
+    let message = null;
+    if (send) {
+      // dispatch registra no histórico e envia pelo provedor conectado (ou deixa pronto para envio manual)
+      message = await withLink(await M.dispatch(db, { ownerId: c.owner_id, client: c, channel: 'whatsapp', kind: 'location_link', body, settings: s }), c.phone);
+    } else {
+      await logNote(db, { ownerId: c.owner_id, clientId: c.id, kind: 'location', body: `🔗 Link de verificação de localização gerado (válido por ${hours}h).` });
+    }
+    res.status(201).json({
+      ...locationView(l), url, body,
+      sent: send ? (message?.status || 'failed') : 'not_sent',
+      send_error: message?.error || null,
+      wa_link: message?.wa_link || (c.phone ? M.waLink(c.phone, body, s.default_country_code) : null),
+    });
   });
 
   api.get('/clients/:id/location-checks', async (req, res) => {
