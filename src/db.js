@@ -227,6 +227,29 @@ CREATE TABLE IF NOT EXISTS application_files (
 );
 CREATE INDEX IF NOT EXISTS idx_files_app ON application_files(application_id);
 
+CREATE TABLE IF NOT EXISTS location_checks (
+  id SERIAL PRIMARY KEY,
+  owner_id INTEGER NOT NULL REFERENCES users(id),
+  client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending | denied | captured | expired
+  purpose TEXT,                              -- texto opcional mostrado ao cliente
+  expected_address TEXT,                     -- endereço declarado, para comparação
+  ip TEXT,
+  ip_city TEXT, ip_region TEXT, ip_country TEXT,
+  ip_lat DOUBLE PRECISION, ip_lng DOUBLE PRECISION, ip_org TEXT,
+  gps_lat DOUBLE PRECISION, gps_lng DOUBLE PRECISION, gps_accuracy DOUBLE PRECISION,
+  gps_address TEXT,
+  consent BOOLEAN NOT NULL DEFAULT FALSE,
+  consent_text TEXT,
+  user_agent TEXT,
+  captured_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_loc_client ON location_checks(client_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_loc_owner ON location_checks(owner_id, created_at);
+
 CREATE TABLE IF NOT EXISTS messages (
   id SERIAL PRIMARY KEY,
   owner_id INTEGER REFERENCES users(id),

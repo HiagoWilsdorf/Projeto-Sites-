@@ -1,0 +1,22 @@
+{
+  "name": "verifica-localizacao",
+  "version": "1.0.0",
+  "description": "Ferramenta de verificação de localização por link, com consentimento do usuário (IP + GPS). Painel com senha única e histórico.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17"
+  }
+}

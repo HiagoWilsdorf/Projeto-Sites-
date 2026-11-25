@@ -332,3 +332,56 @@ test('backup diário criptografado: gera, copia documentos e restaura tudo', asy
     server.close(); await db.close();
   }
 });
+
+test('verificação de localização: só registra com consentimento do cliente', async () => {
+  const t = await setup();
+  try {
+    const admin = t.browser();
+    await admin('POST', '/api/auth/setup', { name: 'Central', email: 'c@x.com', password: 'segredo1' });
+    const c = (await admin('POST', '/api/clients', { name: 'Maria Souza', phone: '11988887777', address: 'Rua A, 100 - São Paulo' })).data;
+
+    // Gera o link e envia pelo WhatsApp (provedor manual → fica pronto para envio)
+    const gen = await admin('POST', `/api/clients/${c.id}/location-check`, { purpose: 'Confirmar endereço', hours: 24 });
+    assert.strictEqual(gen.status, 201, JSON.stringify(gen.data));
+    assert.match(gen.data.url, /\/local\.html\?t=/);
+    assert.strictEqual(gen.data.sent, 'pending_manual');
+    assert.ok(gen.data.wa_link.includes('wa.me'));
+    const token = gen.data.url.split('t=')[1];
+    // A mensagem com o link entrou no histórico do WhatsApp
+    const sentMsg = (await admin('GET', `/api/clients/${c.id}`)).data.messages.find((m) => m.kind === 'location_link');
+    assert.ok(sentMsg && sentMsg.body.includes(token), 'link enviado registrado no histórico');
+
+    // Página pública: pendente
+    const anon = t.browser();
+    const view = await anon('GET', `/api/public/local/${token}`);
+    assert.strictEqual(view.status, 200);
+    assert.strictEqual(view.data.done, false);
+    assert.strictEqual(view.data.status, 'pending');
+
+    // Sem consentimento → nada é registrado além do "negado"
+    const deny = await anon('POST', `/api/public/local/${token}`, { consent: false });
+    assert.strictEqual(deny.data.status, 'denied');
+    // Link já usado não aceita novo envio
+    assert.strictEqual((await anon('POST', `/api/public/local/${token}`, { consent: true })).status, 400);
+
+    // Novo link, agora COM consentimento (IP local não geolocaliza; sem GPS para não acessar a rede)
+    const gen2 = await admin('POST', `/api/clients/${c.id}/location-check`, {});
+    const token2 = gen2.data.url.split('t=')[1];
+    const ok = await anon('POST', `/api/public/local/${token2}`, { consent: true });
+    assert.strictEqual(ok.data.status, 'captured');
+    // Reusar o link confirmado é bloqueado
+    assert.strictEqual((await anon('POST', `/api/public/local/${token2}`, { consent: true })).status, 400);
+
+    // No painel: histórico aparece e o CRM registrou as interações
+    const det = (await admin('GET', `/api/clients/${c.id}`)).data;
+    assert.strictEqual(det.location_checks.length, 2);
+    assert.strictEqual(det.location_checks[0].status, 'captured');
+    assert.ok(det.messages.some((m) => m.kind === 'location' && m.body.includes('Localização confirmada')));
+    assert.ok(det.messages.some((m) => m.kind === 'location' && m.body.includes('não autorizou')));
+
+    // Token inexistente → 404
+    assert.strictEqual((await anon('GET', '/api/public/local/naoexiste')).status, 404);
+  } finally {
+    await t.close();
+  }
+});
