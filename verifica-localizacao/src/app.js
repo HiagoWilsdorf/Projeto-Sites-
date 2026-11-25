@@ -1,7 +1,7 @@
 'use strict';
 const path = require('node:path');
 const express = require('express');
-const DB = require('./db');
+const { createStore } = require('./store');
 const geo = require('./geo');
 const auth = require('./auth');
 
@@ -35,10 +35,7 @@ function createApp(opts = {}) {
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
-  let dbPromise = opts.db ? Promise.resolve(opts.db) : null;
-  const getDb = () => (dbPromise ||= DB.connect().catch((e) => { dbPromise = null; throw e; }));
-  let db;
-
+  const store = opts.store || createStore();
   const pub = path.join(__dirname, '..', 'public');
   app.use(express.json({ limit: '256kb' }));
 
@@ -48,7 +45,7 @@ function createApp(opts = {}) {
     const expired = c.status === 'pending' && isExpired(c);
     return {
       id: c.id, token: c.token, label: c.label, phone: c.phone, purpose: c.purpose,
-      status: expired ? 'expired' : c.status, consent: c.consent,
+      status: expired ? 'expired' : c.status, consent: !!c.consent,
       ip: c.ip, ip_place: [c.ip_city, c.ip_region, c.ip_country].filter(Boolean).join(', ') || null, ip_org: c.ip_org,
       gps_lat: c.gps_lat, gps_lng: c.gps_lng, gps_accuracy: c.gps_accuracy, gps_address: c.gps_address,
       maps_url: (c.gps_lat != null && c.gps_lng != null) ? `https://www.google.com/maps?q=${c.gps_lat},${c.gps_lng}` : null,
@@ -56,7 +53,7 @@ function createApp(opts = {}) {
     };
   }
 
-  // ===================== Sessão / login =====================
+  // ===================== Sessão / login (não dependem do armazenamento) =====================
   app.post('/api/login', (req, res) => {
     if (!process.env.ADMIN_PASSWORD) throw new HttpError(500, 'ADMIN_PASSWORD não configurada no servidor.');
     if (!auth.checkPassword(req.body?.password)) throw new HttpError(401, 'Senha incorreta');
@@ -66,12 +63,9 @@ function createApp(opts = {}) {
   app.post('/api/logout', (req, res) => { auth.clearSession(res); res.json({ ok: true }); });
   app.get('/api/me', (req, res) => res.json({ app_name: APP_NAME(), authenticated: auth.isAuthed(req), configured: !!process.env.ADMIN_PASSWORD }));
 
-  // Conecta o banco sob demanda (serverless). Login/me/logout acima não dependem do banco.
-  app.use('/api', async (req, res, next) => { try { db = await getDb(); next(); } catch (e) { next(e); } });
-
   // ===================== Página pública do destinatário =====================
   async function check(token) {
-    const c = await db.one('SELECT * FROM checks WHERE token=$1', [String(token)]);
+    const c = await store.getByToken(token);
     if (!c) throw notFound('Link de verificação não encontrado');
     return c;
   }
@@ -85,11 +79,11 @@ function createApp(opts = {}) {
   app.post('/api/v/:token', async (req, res) => {
     const c = await check(req.params.token);
     if (c.status !== 'pending') throw bad('Este link já foi utilizado.');
-    if (isExpired(c)) { await db.query("UPDATE checks SET status='expired' WHERE id=$1", [c.id]); throw bad('Este link expirou.'); }
+    if (isExpired(c)) { await store.update(c.id, { status: 'expired' }); throw bad('Este link expirou.'); }
 
     const b = req.body || {};
     if (!b.consent) {
-      await db.query("UPDATE checks SET status='denied', consent=FALSE, user_agent=$2, captured_at=now() WHERE id=$1", [c.id, str(req.headers['user-agent'], 300)]);
+      await store.update(c.id, { status: 'denied', consent: false, user_agent: str(req.headers['user-agent'], 300), captured_at: new Date().toISOString() });
       return res.json({ ok: true, status: 'denied' });
     }
 
@@ -98,13 +92,13 @@ function createApp(opts = {}) {
     const gLat = geo.num(b.gps?.lat), gLng = geo.num(b.gps?.lng), gAcc = geo.num(b.gps?.accuracy);
     const gpsAddr = (gLat != null && gLng != null) ? await geo.reverseGeocode(gLat, gLng).catch(() => null) : null;
 
-    await db.query(`UPDATE checks SET status='captured', consent=TRUE, consent_text=$2, user_agent=$3,
-      ip=$4, ip_city=$5, ip_region=$6, ip_country=$7, ip_lat=$8, ip_lng=$9, ip_org=$10,
-      gps_lat=$11, gps_lng=$12, gps_accuracy=$13, gps_address=$14, captured_at=now() WHERE id=$1`,
-    [c.id, CONSENT_TEXT, str(req.headers['user-agent'], 300),
-      ip || null, ipGeo?.city || null, ipGeo?.region || null, ipGeo?.country || null, ipGeo?.lat ?? null, ipGeo?.lng ?? null, ipGeo?.org || null,
-      gLat, gLng, gAcc, gpsAddr ? gpsAddr.slice(0, 400) : null]);
-
+    await store.update(c.id, {
+      status: 'captured', consent: true, consent_text: CONSENT_TEXT, user_agent: str(req.headers['user-agent'], 300),
+      ip: ip || null, ip_city: ipGeo?.city || null, ip_region: ipGeo?.region || null, ip_country: ipGeo?.country || null,
+      ip_lat: ipGeo?.lat ?? null, ip_lng: ipGeo?.lng ?? null, ip_org: ipGeo?.org || null,
+      gps_lat: gLat, gps_lng: gLng, gps_accuracy: gAcc, gps_address: gpsAddr ? gpsAddr.slice(0, 400) : null,
+      captured_at: new Date().toISOString(),
+    });
     res.json({ ok: true, status: 'captured' });
   });
 
@@ -114,21 +108,21 @@ function createApp(opts = {}) {
     const label = str(req.body?.label, 120) || null;
     const phone = str(req.body?.phone, 30) || null;
     const purpose = str(req.body?.purpose, 300) || null;
-    const c = await db.one(`INSERT INTO checks(token, label, phone, purpose, expires_at)
-      VALUES ($1,$2,$3,$4, now() + ($5::int * interval '1 hour')) RETURNING *`,
-    [DB.randomToken(16), label, phone, purpose, hours]);
+    const c = await store.create({
+      token: store.randomToken(16), label, phone, purpose, status: 'pending',
+      expires_at: new Date(Date.now() + hours * 3600000).toISOString(),
+    });
     const url = `${siteUrl(req)}/v/${c.token}`;
     const msg = `Olá! ${purpose ? purpose + '\n\n' : ''}Para confirmarmos seus dados, abra o link abaixo e autorize a verificação da sua localização (leva alguns segundos):\n${url}\n\n${APP_NAME()}`;
     res.status(201).json({ ...view(c), url, message: msg, wa_link: waLink(phone, msg) });
   });
 
   app.get('/api/checks', auth.requireAuth, async (req, res) => {
-    const rows = await db.query('SELECT * FROM checks ORDER BY created_at DESC, id DESC LIMIT 200');
-    res.json(rows.map(view));
+    res.json((await store.list()).map(view));
   });
 
   app.get('/api/checks/:id', auth.requireAuth, async (req, res) => {
-    const c = await db.one('SELECT * FROM checks WHERE id=$1', [int(req.params.id)]);
+    const c = await store.getById(req.params.id);
     if (!c) throw notFound();
     const url = `${siteUrl(req)}/v/${c.token}`;
     const msg = `Olá! ${c.purpose ? c.purpose + '\n\n' : ''}Para confirmarmos seus dados, abra o link abaixo e autorize a verificação da sua localização:\n${url}\n\n${APP_NAME()}`;
@@ -136,17 +130,15 @@ function createApp(opts = {}) {
   });
 
   app.delete('/api/checks/:id', auth.requireAuth, async (req, res) => {
-    await db.query('DELETE FROM checks WHERE id=$1', [int(req.params.id)]);
+    await store.remove(req.params.id);
     res.json({ ok: true });
   });
 
   // ===================== Páginas / estáticos =====================
-  // URL amigável do destinatário: /v/<token> serve a página pública.
   app.get('/v/:token', (req, res) => res.sendFile(path.join(pub, 'v.html')));
   app.use(express.static(pub));
   app.get('/', (req, res) => res.sendFile(path.join(pub, 'index.html')));
 
-  // 404 + erros
   app.use('/api', (req, res) => res.status(404).json({ error: 'Rota não encontrada' }));
   app.use((err, req, res, next) => {
     const status = err.status || 500;
@@ -157,8 +149,8 @@ function createApp(opts = {}) {
   return app;
 }
 
-// Exporta uma instância pronta como export padrão (requisito do runtime de função da Vercel),
-// mantendo createApp/waLink/siteUrl como propriedades para uso local e nos testes.
+// Export padrão = instância pronta (requisito do runtime de função da Vercel),
+// com createApp/waLink/siteUrl como propriedades para uso local e testes.
 const app = createApp();
 app.createApp = createApp;
 app.waLink = waLink;
