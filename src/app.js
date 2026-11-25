@@ -4,6 +4,7 @@ const DB = require('./db');
 const F = require('./finance');
 const M = require('./messaging');
 const auth = require('./auth');
+const geo = require('./geo');
 const { runAutomations } = require('./scheduler');
 const { createStorage, LIMITS } = require('./storage');
 const backup = require('./backup');
@@ -271,6 +272,77 @@ function createApp(opts = {}) {
       await logNote(q, { ownerId: a.owner_id, applicationId: a.id, body: `Cadastro ${a.status === 'needs_changes' ? 'reenviado' : 'enviado'} para análise por ${a.name}.` });
     });
     res.json(await publicView(await publicApplication(req.params.token)));
+  });
+
+  // ===================== Verificação de localização (consentida) =====================
+  // O operador gera um link e envia ao cliente pelo WhatsApp. O cliente abre, vê o
+  // aviso de privacidade e autoriza; só então o IP e o GPS do navegador são registrados.
+  const CONSENT_TEXT = 'Autorizo o registro da minha localização (aproximada por IP e, se eu permitir no navegador, precisa por GPS) para confirmação de dados neste atendimento.';
+
+  async function locationCheck(token) {
+    const l = await db.one('SELECT * FROM location_checks WHERE token=$1', [String(token)]);
+    if (!l) throw notFound('Link de verificação');
+    return l;
+  }
+  const isExpired = (l) => new Date(l.expires_at).getTime() < Date.now();
+  function locationView(l) {
+    const expired = l.status === 'pending' && isExpired(l);
+    return {
+      id: l.id, status: expired ? 'expired' : l.status, purpose: l.purpose, expected_address: l.expected_address, consent: l.consent,
+      ip: l.ip, ip_city: l.ip_city, ip_region: l.ip_region, ip_country: l.ip_country, ip_org: l.ip_org,
+      ip_place: [l.ip_city, l.ip_region, l.ip_country].filter(Boolean).join(', ') || null,
+      gps_lat: l.gps_lat, gps_lng: l.gps_lng, gps_accuracy: l.gps_accuracy, gps_address: l.gps_address,
+      maps_url: (l.gps_lat != null && l.gps_lng != null) ? `https://www.google.com/maps?q=${l.gps_lat},${l.gps_lng}` : null,
+      captured_at: l.captured_at, expires_at: l.expires_at, created_at: l.created_at,
+    };
+  }
+
+  pub.get('/local/:token', async (req, res) => {
+    const l = await locationCheck(req.params.token);
+    const s = await DB.accountSettings(db, l.owner_id);
+    const expired = l.status === 'pending' && isExpired(l);
+    res.json({
+      business_name: s.business_name,
+      status: expired ? 'expired' : l.status,
+      done: l.status !== 'pending' || expired,
+      purpose: l.purpose || null,
+      consent_text: CONSENT_TEXT,
+    });
+  });
+
+  pub.post('/local/:token', async (req, res) => {
+    const l = await locationCheck(req.params.token);
+    if (l.status !== 'pending') throw bad('Este link já foi utilizado.');
+    if (isExpired(l)) { await db.query("UPDATE location_checks SET status='expired' WHERE id=$1", [l.id]); throw bad('Este link expirou. Peça um novo ao atendente.'); }
+
+    const b = req.body || {};
+    if (!b.consent) {
+      await db.query("UPDATE location_checks SET status='denied', consent=FALSE, user_agent=$2, captured_at=now() WHERE id=$1", [l.id, str(req.headers['user-agent'], 300)]);
+      await logNote(db, { ownerId: l.owner_id, clientId: l.client_id, kind: 'location', body: `❌ O cliente abriu o link de verificação mas não autorizou o registro da localização.` });
+      return res.json({ ok: true, status: 'denied' });
+    }
+
+    const ip = geo.ipFromReq(req);
+    const ipGeo = await geo.lookupIp(ip).catch(() => null);
+    const gLat = geo.num(b.gps?.lat);
+    const gLng = geo.num(b.gps?.lng);
+    const gAcc = geo.num(b.gps?.accuracy);
+    const gpsAddr = (gLat != null && gLng != null) ? await geo.reverseGeocode(gLat, gLng).catch(() => null) : null;
+
+    await db.query(`UPDATE location_checks SET status='captured', consent=TRUE, consent_text=$2, user_agent=$3,
+      ip=$4, ip_city=$5, ip_region=$6, ip_country=$7, ip_lat=$8, ip_lng=$9, ip_org=$10,
+      gps_lat=$11, gps_lng=$12, gps_accuracy=$13, gps_address=$14, captured_at=now() WHERE id=$1`,
+    [l.id, CONSENT_TEXT, str(req.headers['user-agent'], 300),
+      ip || null, ipGeo?.city || null, ipGeo?.region || null, ipGeo?.country || null, ipGeo?.lat ?? null, ipGeo?.lng ?? null, ipGeo?.org || null,
+      gLat, gLng, gAcc, gpsAddr ? gpsAddr.slice(0, 400) : null]);
+
+    const ipLine = ipGeo ? `${[ipGeo.city, ipGeo.region, ipGeo.country].filter(Boolean).join(', ')} (por IP${ip ? ' ' + ip : ''})` : `IP ${ip || 'desconhecido'} (sem geolocalização)`;
+    const gpsLine = (gLat != null && gLng != null)
+      ? `GPS: ${gLat.toFixed(5)}, ${gLng.toFixed(5)}${gAcc != null ? ` (±${Math.round(gAcc)} m)` : ''}${gpsAddr ? ` — ${gpsAddr}` : ''}\nMapa: https://www.google.com/maps?q=${gLat},${gLng}`
+      : 'GPS: o cliente autorizou, mas o navegador não forneceu a localização precisa.';
+    await logNote(db, { ownerId: l.owner_id, clientId: l.client_id, kind: 'location', body: `📍 Localização confirmada pelo cliente (com consentimento).\n${ipLine}\n${gpsLine}` });
+
+    res.json({ ok: true, status: 'captured' });
   });
 
   // ===================== Área logada =====================
@@ -545,7 +617,8 @@ function createApp(opts = {}) {
     const files = c.application_id ? await db.query('SELECT id, label, content_type, size, status, created_at FROM application_files WHERE application_id=$1 ORDER BY id', [c.application_id]) : [];
     await db.query("UPDATE messages SET status='read' WHERE client_id=$1 AND direction='in' AND status='received'", [c.id]);
     const s = await DB.accountSettings(db, c.owner_id);
-    res.json({ ...c, account_name: (await accountNames())[c.owner_id], wa_link: c.phone ? M.waLink(c.phone, '', s.default_country_code) : null, loans, messages, payments, files });
+    const locationChecks = (await db.query('SELECT * FROM location_checks WHERE client_id=$1 ORDER BY created_at DESC, id DESC LIMIT 20', [c.id])).map(locationView);
+    res.json({ ...c, account_name: (await accountNames())[c.owner_id], wa_link: c.phone ? M.waLink(c.phone, '', s.default_country_code) : null, loans, messages, payments, files, location_checks: locationChecks });
   });
 
   api.put('/clients/:id', async (req, res) => {
@@ -573,6 +646,28 @@ function createApp(opts = {}) {
     if (!body) throw bad('Escreva a anotação');
     await logNote(db, { ownerId: c.owner_id, clientId: c.id, loanId: req.body.loan_id ? int(req.body.loan_id) : null, body });
     res.status(201).json({ ok: true });
+  });
+
+  // Gera um link de verificação de localização e a mensagem de WhatsApp para enviar ao cliente.
+  api.post('/clients/:id/location-check', async (req, res) => {
+    const c = await clientFor(req, req.params.id);
+    const hours = Math.min(168, Math.max(1, int(req.body?.hours, 24)));
+    const purpose = str(req.body?.purpose, 300) || null;
+    const l = await db.one(`INSERT INTO location_checks(owner_id, client_id, token, purpose, expected_address, expires_at)
+      VALUES ($1,$2,$3,$4,$5, now() + ($6::int * interval '1 hour')) RETURNING *`,
+    [c.owner_id, c.id, DB.randomToken(16), purpose, c.address || null, hours]);
+    const s = await DB.accountSettings(db, c.owner_id);
+    const url = `${M.siteUrl(baseUrl(req))}/local.html?t=${l.token}`;
+    const first = String(c.name || '').trim().split(/\s+/)[0] || '';
+    const msg = `Olá ${first}! Para confirmarmos seus dados, abra o link abaixo e autorize a verificação de localização (leva alguns segundos):\n${url}\n\n${s.business_name}`;
+    await logNote(db, { ownerId: c.owner_id, clientId: c.id, kind: 'location', body: `🔗 Link de verificação de localização gerado (válido por ${hours}h).` });
+    res.status(201).json({ ...locationView(l), url, message: msg, wa_link: c.phone ? M.waLink(c.phone, msg, s.default_country_code) : null });
+  });
+
+  api.get('/clients/:id/location-checks', async (req, res) => {
+    const c = await clientFor(req, req.params.id);
+    const rows = await db.query('SELECT * FROM location_checks WHERE client_id=$1 ORDER BY created_at DESC, id DESC LIMIT 50', [c.id]);
+    res.json(rows.map(locationView));
   });
 
   async function withLink(msg, phone) {

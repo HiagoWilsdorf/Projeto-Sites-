@@ -618,6 +618,7 @@ async function pageClient(main, id) {
     <div class="actions">
       ${c.wa_link ? `<a class="btn wa" href="${esc(c.wa_link)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
       <button class="btn" id="send-msg">Enviar mensagem</button>
+      <button class="btn" id="loc-check">📍 Verificar local</button>
       <button class="btn" id="edit">Editar</button>
       <a class="btn primary" href="#/emprestimos/novo?cliente=${c.id}">+ Empréstimo</a></div></div>
     <div class="kpis">
@@ -645,6 +646,7 @@ async function pageClient(main, id) {
           <div class="btn-row" style="margin-top:12px"><button class="btn sm" id="archive">${c.archived ? 'Desarquivar' : 'Arquivar'}</button>
           ${c.loans.length ? '' : '<button class="btn sm danger" id="del">Excluir</button>'}</div>
         </div>
+        ${locationCard(c)}
         ${c.files?.length ? `<div class="card"><h2>Documentos do cadastro</h2><div class="file-grid">${c.files.map(fileThumb).join('')}</div>
           ${c.application_id ? `<a class="small" href="#/cadastros/${c.application_id}">ver análise do cadastro</a>` : ''}</div>` : ''}
         ${c.payments.length ? `<div class="card"><h2>Pagamentos</h2>${c.payments.slice(0, 15).map((p) => `<div class="list-item"><div class="main"><strong class="num">${brl(p.amount_cents)}</strong>
@@ -658,11 +660,78 @@ async function pageClient(main, id) {
   $('#edit').onclick = () => clientDialog(c, reload);
   bindFileViewer(main);
   $('#send-msg').onclick = async () => messageDialog({ clientId: c.id, templates: await api('GET', '/templates'), onDone: reload });
+  $('#loc-check').onclick = () => locationDialog(c, reload);
   $('#archive').onclick = () => guard(async () => { await api('PUT', `/clients/${c.id}`, { archived: !c.archived }); reload(); });
   if ($('#del')) $('#del').onclick = async () => { if (await confirmDialog('Excluir este cliente definitivamente?', 'Excluir')) guard(async () => { await api('DELETE', `/clients/${c.id}`); go('/clientes'); }); };
   $('#note-form').onsubmit = (e) => { e.preventDefault(); const f = formData(e.target); guard(async () => { await api('POST', `/clients/${c.id}/notes`, f); reload(); }, e.submitter); };
   bindMessageActions(main, reload);
   refreshBadges();
+}
+
+const LOC_STATUS = {
+  pending: ['Aguardando cliente', 'info'],
+  captured: ['Confirmada', 'ok'],
+  denied: ['Não autorizada', 'warn'],
+  expired: ['Expirado', ''],
+};
+function locBadge(s) { const [t, cls] = LOC_STATUS[s] || [s, '']; return `<span class="badge ${cls}">${t}</span>`; }
+
+function locItem(l) {
+  const lines = [];
+  if (l.ip_place || l.ip) lines.push(`<div class="summary-row"><span class="muted">Por IP</span><span>${esc(l.ip_place || '—')}${l.ip ? ` <span class="small muted">(${esc(l.ip)})</span>` : ''}</span></div>`);
+  if (l.gps_lat != null) lines.push(`<div class="summary-row"><span class="muted">GPS</span><span>${l.gps_lat.toFixed(5)}, ${l.gps_lng.toFixed(5)}${l.gps_accuracy != null ? ` <span class="small muted">±${Math.round(l.gps_accuracy)} m</span>` : ''}</span></div>`);
+  if (l.gps_address) lines.push(`<div class="summary-row"><span class="muted">Endereço (GPS)</span><span>${esc(l.gps_address)}</span></div>`);
+  if (l.expected_address) lines.push(`<div class="summary-row"><span class="muted">Endereço declarado</span><span>${esc(l.expected_address)}</span></div>`);
+  const map = l.maps_url ? `<a class="btn sm" href="${esc(l.maps_url)}" target="_blank" rel="noopener">Ver no mapa</a>` : '';
+  const when = l.captured_at ? dateTimeBR(l.captured_at) : `criado ${dateTimeBR(l.created_at)}`;
+  return `<div class="list-item" style="display:block">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong class="small">${when}</strong>${locBadge(l.status)}</div>
+    ${lines.join('') || '<div class="small muted" style="margin-top:4px">Sem dados registrados ainda.</div>'}
+    ${map ? `<div class="btn-row" style="margin-top:8px">${map}</div>` : ''}</div>`;
+}
+
+function locationCard(c) {
+  const list = (c.location_checks || []);
+  return `<div class="card"><h2>Verificação de localização</h2>
+    <p class="small muted" style="margin-top:-4px">Confirme onde o cliente está — sempre com o consentimento dele. Gere um link e envie pelo WhatsApp.</p>
+    <button class="btn sm primary" id="loc-new" style="margin:4px 0 12px">📍 Gerar link de verificação</button>
+    ${list.length ? list.map(locItem).join('') : '<div class="empty">Nenhuma verificação ainda</div>'}</div>`;
+}
+
+function locationDialog(c, reload) {
+  modal('Verificar localização do cliente', `
+    <p class="small muted">O cliente receberá um link. Ao abrir, ele verá um aviso e precisa <strong>autorizar</strong> antes de qualquer registro. O GPS preciso depende da permissão no navegador dele.</p>
+    <form id="loc-form">
+      <label>Mensagem/motivo mostrado ao cliente (opcional)
+        <input name="purpose" maxlength="300" placeholder="Ex.: Confirmação de endereço para liberação do empréstimo"></label>
+      <label>Validade do link
+        <select name="hours"><option value="24">24 horas</option><option value="2">2 horas</option><option value="48">48 horas</option><option value="168">7 dias</option></select></label>
+      <div class="modal-foot"><button type="button" class="btn" data-close-x>Cancelar</button><button class="btn primary">Gerar link</button></div>
+    </form>
+    <div id="loc-result" hidden></div>`, {
+    onMount: (m, close) => {
+      m.querySelector('[data-close-x]').onclick = close;
+      m.querySelector('#loc-form').onsubmit = (e) => {
+        e.preventDefault();
+        guard(async () => {
+          const f = formData(e.target);
+          const r = await api('POST', `/clients/${c.id}/location-check`, { purpose: f.purpose, hours: Number(f.hours) });
+          const box = m.querySelector('#loc-result');
+          m.querySelector('#loc-form').hidden = true;
+          box.hidden = false;
+          box.innerHTML = `<p class="small">Link gerado. Envie ao cliente:</p>
+            <input value="${esc(r.url)}" readonly style="width:100%;margin-bottom:8px" onclick="this.select()">
+            <div class="btn-row">
+              ${r.wa_link ? `<a class="btn wa" href="${esc(r.wa_link)}" target="_blank" rel="noopener">Enviar no WhatsApp</a>` : ''}
+              <button class="btn" data-copy-link>Copiar link</button>
+              <button class="btn primary" data-done>Concluir</button>
+            </div>`;
+          box.querySelector('[data-copy-link]').onclick = () => { navigator.clipboard?.writeText(r.url); toast('Link copiado'); };
+          box.querySelector('[data-done]').onclick = () => { close(); reload(); };
+        }, e.submitter);
+      };
+    },
+  });
 }
 
 function msgBubble(m) {
