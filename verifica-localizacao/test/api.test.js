@@ -47,19 +47,33 @@ test('login, criação de link e captura só com consentimento', async () => {
     assert.strictEqual((await t.call('POST', `/api/v/${token}`, { consent: false })).data.status, 'denied');
     assert.strictEqual((await t.call('POST', `/api/v/${token}`, { consent: true })).status, 400);
 
+    // Confirmação com consentimento de tempo real + atualizações ao vivo
     const gen2 = await t.call('POST', '/api/checks', {});
     const token2 = gen2.data.url.split('/v/')[1];
-    assert.strictEqual((await t.call('POST', `/api/v/${token2}`, { consent: true })).data.status, 'captured');
+    const conf = await t.call('POST', `/api/v/${token2}`, { consent: true, live_consent: true, gps: { lat: -23.5, lng: -46.6, accuracy: 10 } });
+    assert.strictEqual(conf.data.status, 'captured');
+    assert.strictEqual(conf.data.live, true);
+    // envia posição ao vivo
+    assert.strictEqual((await t.call('POST', `/api/v/${token2}/live`, { gps: { lat: -23.56, lng: -46.64, accuracy: 8 } })).status, 200);
+    const det = (await t.call('GET', '/api/checks')).data.find((x) => x.token === token2);
+    assert.strictEqual(det.live_consent, true);
+    assert.strictEqual(det.live_lat, -23.56);
+    assert.strictEqual(det.live_online, true);
+    assert.ok(det.live_maps_url.includes('-23.56,-46.64'));
+    // sem consentimento de tempo real, o endpoint ao vivo é bloqueado
+    const gen3 = await t.call('POST', '/api/checks', {});
+    const token3 = gen3.data.url.split('/v/')[1];
+    await t.call('POST', `/api/v/${token3}`, { consent: true, live_consent: false });
+    assert.strictEqual((await t.call('POST', `/api/v/${token3}/live`, { gps: { lat: 1, lng: 2 } })).status, 403);
 
     const list = (await t.call('GET', '/api/checks')).data;
-    assert.strictEqual(list.length, 2);
-    assert.strictEqual(list[0].status, 'captured');
-    assert.strictEqual(list[1].status, 'denied');
+    assert.strictEqual(list.length, 3);
+    assert.ok(list.some((x) => x.status === 'denied'));
 
     assert.strictEqual((await t.call('GET', '/api/v/naoexiste')).status, 404);
 
     assert.strictEqual((await t.call('DELETE', `/api/checks/${list[0].id}`)).status, 200);
-    assert.strictEqual((await t.call('GET', '/api/checks')).data.length, 1);
+    assert.strictEqual((await t.call('GET', '/api/checks')).data.length, 2);
 
     await t.call('POST', '/api/logout');
     assert.strictEqual((await t.call('GET', '/api/checks')).status, 401);

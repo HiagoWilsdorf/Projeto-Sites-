@@ -3,6 +3,8 @@
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let APP_NAME = 'Verifica Localização';
+let liveTimer = null;
+function stopAutoRefresh() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
 
 function toast(msg, type = '') {
   const el = document.createElement('div');
@@ -28,6 +30,7 @@ const badge = (s) => { const [t, c] = STATUS[s] || [s, '']; return `<span class=
 const fmt = (d) => d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '';
 
 function loginScreen() {
+  stopAutoRefresh();
   $('#app').innerHTML = `${brand('Painel de acesso')}
     <div class="card">
       <h2>Entrar</h2>
@@ -45,20 +48,40 @@ function loginScreen() {
   };
 }
 
-function checkItem(c) {
+function fixedBlock(c) {
   const rows = [];
   if (c.ip_place || c.ip) rows.push(`<div class="kv"><span class="k">Por IP</span><span class="v">${esc(c.ip_place || '—')}${c.ip ? ` <span class="small muted">(${esc(c.ip)})</span>` : ''}</span></div>`);
   if (c.gps_lat != null) rows.push(`<div class="kv"><span class="k">GPS</span><span class="v">${c.gps_lat.toFixed(5)}, ${c.gps_lng.toFixed(5)}${c.gps_accuracy != null ? ` <span class="small muted">±${Math.round(c.gps_accuracy)} m</span>` : ''}</span></div>`);
-  if (c.gps_address) rows.push(`<div class="kv"><span class="k">Endereço (GPS)</span><span class="v">${esc(c.gps_address)}</span></div>`);
+  if (c.gps_address) rows.push(`<div class="kv"><span class="k">Endereço</span><span class="v">${esc(c.gps_address)}</span></div>`);
+  if (!rows.length) return '';
+  const map = c.maps_url ? `<a class="btn sm" href="${esc(c.maps_url)}" target="_blank" rel="noopener">Ver no mapa</a>` : '';
+  return `<div class="subcard"><div class="subhead">📌 Localização fixa</div>${rows.join('')}${map ? `<div class="row" style="margin-top:8px">${map}</div>` : ''}</div>`;
+}
+
+function liveBlock(c) {
+  if (!c.live_consent && c.live_lat == null) return '';
+  const online = c.live_online ? '<span class="badge ok">🟢 ao vivo</span>' : (c.live_updated_at ? '<span class="badge">inativo</span>' : '<span class="badge info">aguardando</span>');
+  const rows = [];
+  if (c.live_lat != null) {
+    rows.push(`<div class="kv"><span class="k">Posição</span><span class="v">${c.live_lat.toFixed(5)}, ${c.live_lng.toFixed(5)}${c.live_accuracy != null ? ` <span class="small muted">±${Math.round(c.live_accuracy)} m</span>` : ''}</span></div>`);
+    rows.push(`<div class="kv"><span class="k">Atualizado</span><span class="v">${fmt(c.live_updated_at)}</span></div>`);
+  } else {
+    rows.push(`<div class="small muted">A pessoa autorizou o tempo real; aguardando ela abrir o link e compartilhar.</div>`);
+  }
+  const map = c.live_maps_url ? `<a class="btn sm" href="${esc(c.live_maps_url)}" target="_blank" rel="noopener">Ver no mapa</a>` : '';
+  return `<div class="subcard"><div class="subhead">📡 Localização atual (tempo real) ${online}</div>${rows.join('')}${map ? `<div class="row" style="margin-top:8px">${map}</div>` : ''}</div>`;
+}
+
+function checkItem(c) {
   const actions = [];
-  if (c.maps_url) actions.push(`<a class="btn sm" href="${esc(c.maps_url)}" target="_blank" rel="noopener">Ver no mapa</a>`);
   if (c.status === 'pending') actions.push(`<button class="btn sm" data-share="${c.id}">Link / enviar</button>`);
   actions.push(`<button class="btn sm danger" data-del="${c.id}">Excluir</button>`);
   const title = c.label ? esc(c.label) : `Verificação #${c.id}`;
   return `<div class="item">
     <div class="top"><strong>${title}</strong>${badge(c.status)}</div>
-    <div class="small muted" style="margin-bottom:6px">${c.captured_at ? 'Confirmada em ' + fmt(c.captured_at) : 'Criada em ' + fmt(c.created_at)}${c.status === 'pending' ? ' · expira ' + fmt(c.expires_at) : ''}</div>
-    ${rows.join('')}
+    <div class="small muted" style="margin-bottom:8px">${c.captured_at ? 'Confirmada em ' + fmt(c.captured_at) : 'Criada em ' + fmt(c.created_at)}${c.status === 'pending' ? ' · expira ' + fmt(c.expires_at) : ''}</div>
+    ${fixedBlock(c)}
+    ${liveBlock(c)}
     <div class="row" style="margin-top:10px">${actions.join('')}</div>
   </div>`;
 }
@@ -98,7 +121,11 @@ async function dashboard() {
       <div id="list">${list.length ? list.map(checkItem).join('') : '<div class="empty">Nenhuma verificação ainda</div>'}</div>
     </div>`;
 
-  $('#logout').onclick = async () => { await api('POST', '/api/logout'); loginScreen(); };
+  // Atualiza o histórico periodicamente para refletir a localização ao vivo.
+  stopAutoRefresh();
+  liveTimer = setInterval(dashboardRefreshList, 15000);
+
+  $('#logout').onclick = async () => { stopAutoRefresh(); await api('POST', '/api/logout'); loginScreen(); };
   $('#new').onsubmit = async (e) => {
     e.preventDefault();
     const btn = e.submitter; btn.disabled = true;

@@ -1,5 +1,6 @@
 'use strict';
-// Página pública: pede consentimento e, se autorizado, captura IP + GPS do navegador.
+// Página pública: pede consentimento (localização fixa + tempo real), captura o ponto fixo e,
+// se autorizado, compartilha a localização ao vivo enquanto a tela estiver aberta.
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const token = decodeURIComponent((location.pathname.match(/\/v\/([^/?#]+)/) || [])[1] || new URLSearchParams(location.search).get('t') || '');
@@ -31,9 +32,54 @@ function done(app, name, status) {
   app.innerHTML = `${brand(name)}<div class="card center"><div class="big">${icon}</div><h2 style="margin:10px 0">${esc(title)}</h2><p class="muted">${esc(sub)}</p></div>`;
 }
 
+// ---------- Compartilhamento em tempo real ----------
+let watchId = null;
+let lastSent = 0;
+const SEND_EVERY = 15000; // envia no máximo a cada 15s
+
+function stopLive(silent) {
+  if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  try { navigator.sendBeacon?.(`/api/v/${encodeURIComponent(token)}/live/stop`); } catch { /* ok */ }
+  if (!silent) {
+    const el = $('#live-card');
+    if (el) el.innerHTML = `<div class="center"><div class="big">⏹️</div><h2 style="margin:8px 0">Compartilhamento encerrado</h2><p class="muted">Você parou de compartilhar sua localização. Pode fechar a página.</p></div>`;
+  }
+}
+
+function startLive(app, info) {
+  app.innerHTML = `${brand(info.app_name)}
+    <div class="card" id="live-card">
+      <div class="center"><div class="big">📡</div><h2 style="margin:8px 0">Compartilhando sua localização ao vivo</h2></div>
+      <p class="muted small center" id="live-status">Ativando o GPS…</p>
+      <div class="note" style="margin-top:8px">Sua localização está sendo compartilhada em tempo real <strong>apenas enquanto esta tela ficar aberta</strong>. Você pode parar quando quiser.</div>
+      <button class="btn danger block" id="stop" style="margin-top:14px">Parar compartilhamento</button>
+    </div>`;
+  $('#stop').onclick = () => stopLive(false);
+
+  if (!navigator.geolocation) { $('#live-status').textContent = 'Seu navegador não suporta localização.'; return; }
+  watchId = navigator.geolocation.watchPosition(async (p) => {
+    const now = Date.now();
+    if (now - lastSent < SEND_EVERY) return; // controla a frequência de envio
+    lastSent = now;
+    try {
+      await api('POST', `/api/v/${encodeURIComponent(token)}/live`, { gps: { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy } });
+      const el = $('#live-status');
+      if (el) el.innerHTML = `✅ Ativo — última atualização às ${new Date().toLocaleTimeString('pt-BR')}`;
+    } catch (e) { const el = $('#live-status'); if (el) el.textContent = e.message; }
+  }, (err) => {
+    const el = $('#live-status'); if (el) el.textContent = err.code === 1 ? 'Permissão de localização negada.' : 'Não foi possível obter a localização.';
+  }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+
+  // Se a pessoa fechar/minimizar, avisamos o servidor que o ao vivo parou.
+  window.addEventListener('pagehide', () => stopLive(true));
+}
+
+// ---------- Fluxo principal ----------
 async function submit(app, info) {
+  const fixed = $('#c-fixed').checked;
+  const live = $('#c-live').checked;
+  if (!fixed) { toast('Marque a autorização da localização para continuar.', 'error'); return; }
   const btn = $('#go');
-  if (!$('#consent').checked) { toast('Marque a caixa de autorização para continuar.', 'error'); return; }
   btn.disabled = true; btn.textContent = 'Obtendo sua localização…';
   const gps = await new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
@@ -45,10 +91,11 @@ async function submit(app, info) {
   });
   btn.textContent = 'Confirmando…';
   try {
-    await api('POST', `/api/v/${encodeURIComponent(token)}`, { consent: true, gps });
+    const r = await api('POST', `/api/v/${encodeURIComponent(token)}`, { consent: true, live_consent: live, gps });
+    if (r.live) { startLive(app, info); return; }
     app.innerHTML = `${brand(info.app_name)}<div class="card center"><div class="big">✅</div><h2 style="margin:10px 0">Localização confirmada!</h2>
       <p class="muted">${gps ? 'Obrigado — recebemos sua localização.' : 'Obrigado! Não foi possível obter a localização precisa pelo GPS, mas o registro foi concluído.'}</p></div>`;
-  } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'Autorizar e confirmar minha localização'; }
+  } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'Autorizar e confirmar'; }
 }
 
 async function decline(app, info) {
@@ -67,18 +114,18 @@ async function main() {
 
   app.innerHTML = `${brand(info.app_name, 'Confirmação de localização')}
     <div class="card">
-      ${info.purpose ? `<p>${esc(info.purpose)}</p>` : '<p>Para confirmar seus dados, precisamos registrar sua localização atual.</p>'}
+      ${info.purpose ? `<p>${esc(info.purpose)}</p>` : '<p>Para confirmar seus dados, precisamos registrar sua localização.</p>'}
       <div class="note">O que será registrado, <strong>somente se você autorizar</strong>:
         <ul>
-          <li>Localização aproximada pelo seu IP (cidade/região).</li>
-          <li>Localização precisa por GPS — o navegador vai <strong>pedir sua permissão</strong>.</li>
-          <li>Data e hora do acesso.</li>
+          <li>Sua localização atual (uma vez), por IP e GPS.</li>
+          <li>Opcional: sua localização em tempo real, <strong>enquanto esta tela ficar aberta</strong>.</li>
         </ul>
       </div>
-      <label class="consent"><input type="checkbox" id="consent"><span class="small">${esc(info.consent_text)}</span></label>
-      <button class="btn primary block" id="go">Autorizar e confirmar minha localização</button>
+      <label class="consent"><input type="checkbox" id="c-fixed"><span class="small">${esc(info.consent_fixed)}</span></label>
+      <label class="consent"><input type="checkbox" id="c-live"><span class="small">${esc(info.consent_live)}</span></label>
+      <button class="btn primary block" id="go">Autorizar e confirmar</button>
       <button class="btn block" id="no" style="margin-top:10px">Não autorizar</button>
-      <p class="muted small" style="margin-top:12px">Seus dados são usados apenas para a confirmação e tratados conforme a LGPD.</p>
+      <p class="muted small" style="margin-top:12px">Seus dados são usados apenas para a confirmação e tratados conforme a LGPD. O tempo real pode ser interrompido por você a qualquer momento.</p>
     </div>`;
   $('#go').onclick = () => submit(app, info);
   $('#no').onclick = () => decline(app, info);

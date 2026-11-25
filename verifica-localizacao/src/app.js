@@ -6,7 +6,9 @@ const geo = require('./geo');
 const auth = require('./auth');
 
 const APP_NAME = () => process.env.APP_NAME || 'Verifica Localização';
-const CONSENT_TEXT = 'Autorizo o registro da minha localização (aproximada por IP e, se eu permitir no navegador, precisa por GPS) para confirmação de dados.';
+const CONSENT_FIXED = 'Autorizo o registro da minha localização atual (uma vez), por IP e GPS, para confirmação de dados.';
+const CONSENT_LIVE = 'Autorizo o compartilhamento da minha localização em tempo real enquanto esta tela estiver aberta. Posso parar quando quiser.';
+const LIVE_ONLINE_MS = 60000; // considerada "ao vivo" se atualizou nos últimos 60s
 
 const str = (v, max = 400) => String(v ?? '').trim().slice(0, max);
 const int = (v, d = 0) => (Number.isFinite(Number(v)) && v !== '' && v !== null ? Math.round(Number(v)) : d);
@@ -43,13 +45,20 @@ function createApp(opts = {}) {
 
   function view(c) {
     const expired = c.status === 'pending' && isExpired(c);
+    const liveOnline = !!c.live_updated_at && (Date.now() - new Date(c.live_updated_at).getTime() < LIVE_ONLINE_MS);
     return {
       id: c.id, token: c.token, label: c.label, phone: c.phone, purpose: c.purpose,
       status: expired ? 'expired' : c.status, consent: !!c.consent,
+      // Localização fixa (capturada uma vez)
       ip: c.ip, ip_place: [c.ip_city, c.ip_region, c.ip_country].filter(Boolean).join(', ') || null, ip_org: c.ip_org,
       gps_lat: c.gps_lat, gps_lng: c.gps_lng, gps_accuracy: c.gps_accuracy, gps_address: c.gps_address,
       maps_url: (c.gps_lat != null && c.gps_lng != null) ? `https://www.google.com/maps?q=${c.gps_lat},${c.gps_lng}` : null,
       captured_at: c.captured_at, expires_at: c.expires_at, created_at: c.created_at,
+      // Localização em tempo real (atualizada enquanto a pessoa compartilha)
+      live_consent: !!c.live_consent,
+      live_lat: c.live_lat ?? null, live_lng: c.live_lng ?? null, live_accuracy: c.live_accuracy ?? null,
+      live_updated_at: c.live_updated_at || null, live_online: liveOnline,
+      live_maps_url: (c.live_lat != null && c.live_lng != null) ? `https://www.google.com/maps?q=${c.live_lat},${c.live_lng}` : null,
     };
   }
 
@@ -73,7 +82,10 @@ function createApp(opts = {}) {
   app.get('/api/v/:token', async (req, res) => {
     const c = await check(req.params.token);
     const expired = c.status === 'pending' && isExpired(c);
-    res.json({ app_name: APP_NAME(), status: expired ? 'expired' : c.status, done: c.status !== 'pending' || expired, purpose: c.purpose || null, consent_text: CONSENT_TEXT });
+    res.json({
+      app_name: APP_NAME(), status: expired ? 'expired' : c.status, done: c.status !== 'pending' || expired,
+      purpose: c.purpose || null, consent_fixed: CONSENT_FIXED, consent_live: CONSENT_LIVE,
+    });
   });
 
   app.post('/api/v/:token', async (req, res) => {
@@ -91,15 +103,36 @@ function createApp(opts = {}) {
     const ipGeo = await geo.lookupIp(ip).catch(() => null);
     const gLat = geo.num(b.gps?.lat), gLng = geo.num(b.gps?.lng), gAcc = geo.num(b.gps?.accuracy);
     const gpsAddr = (gLat != null && gLng != null) ? await geo.reverseGeocode(gLat, gLng).catch(() => null) : null;
+    const liveConsent = !!b.live_consent;
 
     await store.update(c.id, {
-      status: 'captured', consent: true, consent_text: CONSENT_TEXT, user_agent: str(req.headers['user-agent'], 300),
+      status: 'captured', consent: true, consent_fixed_text: CONSENT_FIXED, user_agent: str(req.headers['user-agent'], 300),
       ip: ip || null, ip_city: ipGeo?.city || null, ip_region: ipGeo?.region || null, ip_country: ipGeo?.country || null,
       ip_lat: ipGeo?.lat ?? null, ip_lng: ipGeo?.lng ?? null, ip_org: ipGeo?.org || null,
       gps_lat: gLat, gps_lng: gLng, gps_accuracy: gAcc, gps_address: gpsAddr ? gpsAddr.slice(0, 400) : null,
       captured_at: new Date().toISOString(),
+      live_consent: liveConsent, live_consent_text: liveConsent ? CONSENT_LIVE : null,
     });
-    res.json({ ok: true, status: 'captured' });
+    res.json({ ok: true, status: 'captured', live: liveConsent });
+  });
+
+  // Atualização de localização em tempo real (enquanto a tela da pessoa está aberta e ela consentiu).
+  app.post('/api/v/:token/live', async (req, res) => {
+    const c = await check(req.params.token);
+    if (isExpired(c)) { await store.update(c.id, { status: 'expired' }); throw bad('Este link expirou.'); }
+    if (c.status !== 'captured') throw bad('Confirmação não concluída.');
+    if (!c.live_consent) throw new HttpError(403, 'Compartilhamento em tempo real não autorizado.');
+    const lat = geo.num(req.body?.gps?.lat), lng = geo.num(req.body?.gps?.lng), acc = geo.num(req.body?.gps?.accuracy);
+    if (lat == null || lng == null) throw bad('Coordenadas inválidas.');
+    await store.update(c.id, { live_lat: lat, live_lng: lng, live_accuracy: acc, live_updated_at: new Date().toISOString(), live_active: true });
+    res.json({ ok: true });
+  });
+
+  // A pessoa parou de compartilhar (ou fechou a tela).
+  app.post('/api/v/:token/live/stop', async (req, res) => {
+    const c = await store.getByToken(req.params.token);
+    if (c) await store.update(c.id, { live_active: false });
+    res.json({ ok: true });
   });
 
   // ===================== Painel (exige login) =====================
